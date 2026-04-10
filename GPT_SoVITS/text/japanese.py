@@ -78,6 +78,7 @@ except Exception:
 
 
 from text.symbols import punctuation
+from text.phone_units import finalize_phone_units, flatten_phone_units
 
 # Regular expression matching Japanese without punctuation marks:
 _japanese_characters = re.compile(
@@ -115,6 +116,8 @@ _real_hatsuon = [
     ]
 ]
 
+_prosody_marks = {"^", "$", "?", "_", "#", "[", "]"}
+
 
 def post_replace_ph(ph):
     rep_map = {
@@ -133,6 +136,20 @@ def post_replace_ph(ph):
     if ph in rep_map.keys():
         ph = rep_map[ph]
     return ph
+
+
+def _normalize_alignment_phone(ph):
+    if ph in {"A", "E", "I", "O", "U"}:
+        return ph.lower()
+    return ph
+
+
+def _phones_equivalent(lhs, rhs):
+    return _normalize_alignment_phone(lhs) == _normalize_alignment_phone(rhs)
+
+
+def _is_prosody_mark(ph):
+    return ph in _prosody_marks
 
 
 def replace_consecutive_punctuation(text):
@@ -169,6 +186,110 @@ def preprocess_jap(text, with_prosody=False):
                 continue
             text += [marks[i].replace(" ", "")]
     return text
+
+
+def _frontend_word_phone_candidates(word_info):
+    raw_candidates = []
+    for key in ("string", "pron", "read"):
+        value = (word_info.get(key) or "").replace("’", "").replace("'", "")
+        if not value or value == "*" or value in raw_candidates:
+            continue
+        raw_candidates.append(value)
+
+    candidates = []
+    for value in raw_candidates:
+        raw = pyopenjtalk.g2p(value)
+        phones = [post_replace_ph(item) for item in raw.split(" ") if item]
+        if phones and phones not in candidates:
+            candidates.append(phones)
+    return candidates
+
+
+def _align_word_candidate(full_tokens, cursor, candidate_phones):
+    probe = cursor
+    matched = 0
+    unit_tokens = []
+    while probe < len(full_tokens) and matched < len(candidate_phones):
+        current = full_tokens[probe]
+        if _phones_equivalent(current, candidate_phones[matched]):
+            unit_tokens.append(current)
+            matched += 1
+            probe += 1
+            continue
+        if _is_prosody_mark(current):
+            unit_tokens.append(current)
+            probe += 1
+            continue
+        return None
+    if matched != len(candidate_phones):
+        return None
+    return unit_tokens, probe
+
+
+def _build_word_unit(word_info, unit_tokens):
+    return {
+        "unit_type": "word",
+        "text": word_info.get("string", ""),
+        "norm_text": (word_info.get("pron") or word_info.get("read") or word_info.get("string") or "").replace("’", ""),
+        "phones": unit_tokens,
+    }
+
+
+def _build_prosody_units(full_tokens, start, end):
+    return [
+        {
+            "unit_type": "prosody",
+            "text": full_tokens[idx],
+            "norm_text": full_tokens[idx],
+            "phones": [full_tokens[idx]],
+        }
+        for idx in range(start, end)
+    ]
+
+
+def _align_frontend_words(frontend, full_tokens, word_index, cursor):
+    if word_index >= len(frontend):
+        trailing_end = cursor
+        while trailing_end < len(full_tokens) and _is_prosody_mark(full_tokens[trailing_end]):
+            trailing_end += 1
+        if trailing_end != len(full_tokens):
+            return None
+        return _build_prosody_units(full_tokens, cursor, trailing_end)
+
+    word_info = frontend[word_index]
+    candidates = _frontend_word_phone_candidates(word_info)
+    for candidate_phones in candidates:
+        aligned = _align_word_candidate(full_tokens, cursor, candidate_phones)
+        if aligned is None:
+            continue
+        unit_tokens, next_cursor = aligned
+        boundary_end = next_cursor
+        while boundary_end < len(full_tokens) and _is_prosody_mark(full_tokens[boundary_end]):
+            boundary_end += 1
+        rest = _align_frontend_words(frontend, full_tokens, word_index + 1, boundary_end)
+        if rest is None:
+            continue
+        return [_build_word_unit(word_info, unit_tokens)] + _build_prosody_units(full_tokens, next_cursor, boundary_end) + rest
+
+    if word_index == len(frontend) - 1 and cursor < len(full_tokens):
+        return [_build_word_unit(word_info, full_tokens[cursor:])]
+    return None
+
+
+def _sentence_phone_units(sentence, with_prosody=True):
+    frontend = pyopenjtalk.run_frontend(sentence)
+    full_tokens = [post_replace_ph(item) for item in preprocess_jap(sentence, with_prosody=with_prosody)]
+    units = _align_frontend_words(frontend, full_tokens, 0, 0)
+    if units is None:
+        return [
+            {
+                "unit_type": "word_group",
+                "text": sentence,
+                "norm_text": sentence,
+                "phones": full_tokens,
+            }
+        ]
+    return units
 
 
 def text_normalize(text):
@@ -265,10 +386,35 @@ def _numeric_feature_by_regex(regex, s):
 
 
 def g2p(norm_text, with_prosody=True):
-    phones = preprocess_jap(norm_text, with_prosody)
-    phones = [post_replace_ph(i) for i in phones]
-    # todo: implement tones and word2ph
-    return phones
+    return flatten_phone_units(g2p_with_phone_units(norm_text, with_prosody)[1])
+
+
+def g2p_with_phone_units(norm_text, with_prosody=True):
+    text = symbols_to_japanese(norm_text)
+    text = text.lower()
+    sentences = re.split(_japanese_marks, text)
+    marks = re.findall(_japanese_marks, text)
+
+    units = []
+    for idx, sentence in enumerate(sentences):
+        if re.match(_japanese_characters, sentence):
+            units.extend(_sentence_phone_units(sentence, with_prosody=with_prosody))
+        if idx < len(marks):
+            mark = marks[idx]
+            if mark == " ":
+                continue
+            cleaned_mark = mark.replace(" ", "")
+            units.append(
+                {
+                    "unit_type": "punct",
+                    "text": mark,
+                    "norm_text": cleaned_mark,
+                    "phones": [post_replace_ph(cleaned_mark)],
+                }
+            )
+
+    units = finalize_phone_units(units)
+    return flatten_phone_units(units), units
 
 
 if __name__ == "__main__":

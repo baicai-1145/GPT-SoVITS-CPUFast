@@ -7,6 +7,7 @@ import numpy as np
 from text.symbols import punctuation
 
 from text.symbols2 import symbols
+from text.phone_units import finalize_phone_units, flatten_phone_units
 
 from builtins import str as unicode
 from text.en_normalization.expend import normalize
@@ -158,6 +159,11 @@ def replace_phs(phs):
         else:
             print("ph not in symbols: ", ph)
     return phs_new
+
+
+def normalize_pronunciation(pron):
+    phones = [ph if ph != "<unk>" else "UNK" for ph in pron if ph not in [" ", "<pad>", "UW", "</s>", "<s>"]]
+    return replace_phs(phones)
 
 
 def replace_consecutive_punctuation(text):
@@ -415,36 +421,46 @@ class en_G2p:
         # steps
         prons = []
         for o_word, pos in tokens:
-            # 还原 g2p_en 小写操作逻辑
-            word = o_word.lower()
-
-            if re.search("[a-z]", word) is None:
-                pron = [word]
-            # 先把单字母推出去
-            elif len(word) == 1:
-                # 单读 A 发音修正, 这里需要原格式 o_word 判断大写
-                if o_word == "A":
-                    pron = ["EY1"]
-                else:
-                    pron = self.cmu[word][0]
-            # g2p_en 原版多音字处理
-            elif word in self.homograph2features:  # Check homograph
-                pron1, pron2, pos1 = self.homograph2features[word]
-                if pos.startswith(pos1):
-                    pron = pron1
-                # pos1比pos长仅出现在read
-                elif len(pos) < len(pos1) and pos == pos1[: len(pos)]:
-                    pron = pron1
-                else:
-                    pron = pron2
-            else:
-                # 递归查找预测
-                pron = self.qryword(o_word)
-
+            pron = self.pronounce_token(o_word, pos)
             prons.extend(pron)
             prons.extend([" "])
 
         return prons[:-1]
+
+    def pronounce_token(self, o_word, pos):
+        word = o_word.lower()
+
+        if re.search("[a-z]", word) is None:
+            return [word]
+        if len(word) == 1:
+            if o_word == "A":
+                return ["EY1"]
+            return self.cmu[word][0]
+        if word in self.homograph2features:
+            pron1, pron2, pos1 = self.homograph2features[word]
+            if pos.startswith(pos1):
+                return pron1
+            if len(pos) < len(pos1) and pos == pos1[: len(pos)]:
+                return pron1
+            return pron2
+        return self.qryword(o_word)
+
+    def phone_units(self, text):
+        words = simple_word_tokenize(text)
+        tokens = ensure_pos_tag()(words) if self._needs_pos_tag(words) else [(word, "") for word in words]
+        units = []
+        for o_word, pos in tokens:
+            pron = self.pronounce_token(o_word, pos)
+            unit_type = "punct" if re.search("[a-z]", o_word.lower()) is None else "word"
+            units.append(
+                {
+                    "unit_type": unit_type,
+                    "text": o_word,
+                    "norm_text": o_word.lower() if unit_type == "word" else o_word,
+                    "phones": normalize_pronunciation(pron),
+                }
+            )
+        return finalize_phone_units(units)
 
     def qryword(self, o_word):
         word = o_word.lower()
@@ -501,11 +517,12 @@ _g2p = en_G2p()
 
 
 def g2p(text):
-    # g2p_en 整段推理，剔除不存在的arpa返回
-    phone_list = _g2p(text)
-    phones = [ph if ph != "<unk>" else "UNK" for ph in phone_list if ph not in [" ", "<pad>", "UW", "</s>", "<s>"]]
+    return flatten_phone_units(_g2p.phone_units(text))
 
-    return replace_phs(phones)
+
+def g2p_with_phone_units(text):
+    units = _g2p.phone_units(text)
+    return flatten_phone_units(units), units
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import os
 
 from text import symbols as symbols_v1
 from text import symbols2 as symbols_v2
+from text.phone_units import build_char_phone_units
 
 special = [
     # ("%", "zh", "SP"),
@@ -53,6 +54,76 @@ def clean_text(text, language, version=None):
         word2ph = None
     phones = ["UNK" if ph not in symbols else ph for ph in phones]
     return phones, word2ph, norm_text
+
+
+def clean_text_with_phone_units(text, language, version=None):
+    if version is None:
+        version = os.environ.get("version", "v2")
+    if version == "v1":
+        symbols = symbols_v1.symbols
+        language_module_map = {"zh": "chinese", "ja": "japanese", "en": "english"}
+    else:
+        symbols = symbols_v2.symbols
+        language_module_map = {"zh": "chinese2", "ja": "japanese", "en": "english", "ko": "korean", "yue": "cantonese"}
+
+    if language not in language_module_map:
+        language = "en"
+        text = " "
+    for special_s, special_l, target_symbol in special:
+        if special_s in text and language == special_l:
+            phones, word2ph, norm_text = clean_special(text, language, special_s, target_symbol, version)
+            phone_units = build_char_phone_units(norm_text, word2ph, phones) if word2ph is not None else None
+            return phones, word2ph, norm_text, phone_units
+
+    language_module = __import__("text." + language_module_map[language], fromlist=[language_module_map[language]])
+    if hasattr(language_module, "text_normalize"):
+        norm_text = language_module.text_normalize(text)
+    else:
+        norm_text = text
+
+    phone_units = None
+    if language == "zh" or language == "yue":
+        phones, word2ph = language_module.g2p(norm_text)
+        assert len(phones) == sum(word2ph)
+        assert len(norm_text) == len(word2ph)
+    elif language == "en":
+        if hasattr(language_module, "g2p_with_phone_units"):
+            phones, phone_units = language_module.g2p_with_phone_units(norm_text)
+        else:
+            phones = language_module.g2p(norm_text)
+            phone_units = None
+        if len(phones) < 4:
+            phones = [","] + phones
+            phone_units = None
+        word2ph = None
+    else:
+        if hasattr(language_module, "g2p_with_phone_units"):
+            phones, phone_units = language_module.g2p_with_phone_units(norm_text)
+        else:
+            phones = language_module.g2p(norm_text)
+            phone_units = None
+        word2ph = None
+
+    phones = ["UNK" if ph not in symbols else ph for ph in phones]
+    if word2ph is not None:
+        phone_units = build_char_phone_units(norm_text, word2ph, phones)
+    elif phone_units is not None:
+        cursor = 0
+        normalized_units = []
+        for raw_unit in phone_units:
+            unit = dict(raw_unit)
+            phone_count = int(unit.get("phone_count", len(unit.get("phones", []))))
+            unit["phones"] = list(phones[cursor : cursor + phone_count])
+            unit["phone_start"] = int(cursor)
+            cursor += phone_count
+            unit["phone_end"] = int(cursor)
+            unit["phone_count"] = int(phone_count)
+            normalized_units.append(unit)
+        if cursor != len(phones):
+            raise RuntimeError(f"phone_units length mismatch: cursor={cursor}, phones={len(phones)}")
+        phone_units = normalized_units
+
+    return phones, word2ph, norm_text, phone_units
 
 
 def clean_special(text, language, special_s, target_symbol, version=None):

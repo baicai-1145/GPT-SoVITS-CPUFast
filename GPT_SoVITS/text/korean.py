@@ -10,6 +10,7 @@ import ko_pron
 import importlib
 import importlib.util
 import os
+from text.phone_units import finalize_phone_units, flatten_phone_units
 
 
 class _LazyCmuDict:
@@ -405,15 +406,79 @@ def post_replace_ph(ph):
     return ph
 
 
-def g2p(text):
+def _is_korean_separator(char):
+    if char.isspace():
+        return "space"
+    if char in {"：", "；", "，", "。", "！", "？", "\n", "·", "、", ".", ",", "!", "?", ";", ":"}:
+        return "punct"
+    return "word"
+
+
+def _split_korean_units(text):
+    if not text:
+        return []
+    units = []
+    cursor = 0
+    while cursor < len(text):
+        kind = _is_korean_separator(text[cursor])
+        end = cursor + 1
+        if kind != "word":
+            while end < len(text) and _is_korean_separator(text[end]) == kind:
+                end += 1
+        else:
+            while end < len(text) and _is_korean_separator(text[end]) == "word":
+                end += 1
+        units.append((kind, text[cursor:end]))
+        cursor = end
+    return units
+
+
+def _transform_g2p_text(text):
     text = latin_to_hangul(text)
     text = _g2p(text)
     text = divide_hangul(text)
     text = fix_g2pk2_error(text)
     text = re.sub(r"([\u3131-\u3163])$", r"\1.", text)
-    # text = "".join([post_replace_ph(i) for i in text])
-    text = [post_replace_ph(i) for i in text]
     return text
+
+
+def g2p(text):
+    return flatten_phone_units(g2p_with_phone_units(text)[1])
+
+
+def g2p_with_phone_units(text):
+    transformed = _transform_g2p_text(text)
+    source_units = _split_korean_units(text)
+    transformed_units = _split_korean_units(transformed)
+
+    if len(source_units) + 1 == len(transformed_units):
+        extra_kind, extra_text = transformed_units[-1]
+        if extra_kind == "punct" and (not source_units or source_units[-1] != (extra_kind, extra_text)):
+            source_units = source_units + [(extra_kind, extra_text)]
+
+    if len(source_units) != len(transformed_units):
+        raise RuntimeError(
+            f"Korean unit count mismatch: source={len(source_units)} transformed={len(transformed_units)}"
+        )
+
+    units = []
+    for (source_kind, source_text), (transformed_kind, transformed_text) in zip(source_units, transformed_units):
+        if source_kind != transformed_kind:
+            raise RuntimeError(
+                f"Korean unit type mismatch: source={source_kind}:{source_text!r} "
+                f"transformed={transformed_kind}:{transformed_text!r}"
+            )
+        units.append(
+            {
+                "unit_type": source_kind,
+                "text": source_text,
+                "norm_text": transformed_text,
+                "phones": [post_replace_ph(ch) for ch in transformed_text],
+            }
+        )
+
+    units = finalize_phone_units(units)
+    return flatten_phone_units(units), units
 
 
 if __name__ == "__main__":
