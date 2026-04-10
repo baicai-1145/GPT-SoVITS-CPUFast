@@ -151,6 +151,7 @@ class T2SBlock:
         self,
         x: torch.Tensor,
         attn_mask: torch.Tensor,
+        max_decode_steps: int,
         padding_mask: Optional[torch.Tensor] = None,
         torch_sdpa: bool = True,
     ):
@@ -186,28 +187,37 @@ class T2SBlock:
             self.norm_b2,
             self.norm_eps2,
         )
-        return x, k_cache, v_cache
+        cache_capacity = kv_len + max_decode_steps
+        full_k_cache = k_cache.new_empty((batch_size, cache_capacity, k_cache.shape[2]))
+        full_v_cache = v_cache.new_empty((batch_size, cache_capacity, v_cache.shape[2]))
+        full_k_cache[:, :kv_len] = k_cache
+        full_v_cache[:, :kv_len] = v_cache
+        return x, full_k_cache, full_v_cache, kv_len
 
     def decode_next_token(
         self,
         x: torch.Tensor,
         k_cache: torch.Tensor,
         v_cache: torch.Tensor,
+        cache_len: int,
         attn_mask: torch.Tensor = None,
         torch_sdpa: bool = True,
     ):
         q, k, v = F.linear(x, self.qkv_w, self.qkv_b).chunk(3, dim=-1)
 
-        k_cache = torch.cat([k_cache, k], dim=1)
-        v_cache = torch.cat([v_cache, v], dim=1)
+        next_cache_len = cache_len + k.shape[1]
+        k_cache[:, cache_len:next_cache_len] = k
+        v_cache[:, cache_len:next_cache_len] = v
 
         batch_size = q.shape[0]
         q_len = q.shape[1]
-        kv_len = k_cache.shape[1]
+        kv_len = next_cache_len
+        active_k_cache = k_cache[:, :kv_len]
+        active_v_cache = v_cache[:, :kv_len]
 
         q = q.view(batch_size, q_len, self.num_heads, -1).transpose(1, 2)
-        k = k_cache.view(batch_size, kv_len, self.num_heads, -1).transpose(1, 2)
-        v = v_cache.view(batch_size, kv_len, self.num_heads, -1).transpose(1, 2)
+        k = active_k_cache.view(batch_size, kv_len, self.num_heads, -1).transpose(1, 2)
+        v = active_v_cache.view(batch_size, kv_len, self.num_heads, -1).transpose(1, 2)
 
         if torch_sdpa:
             attn = F.scaled_dot_product_attention(q, k, v, (~attn_mask) if attn_mask is not None else None)
@@ -246,30 +256,35 @@ class T2STransformer:
         self,
         x: torch.Tensor,
         attn_mask: torch.Tensor,
+        max_decode_steps: int,
         padding_mask: Optional[torch.Tensor] = None,
         torch_sdpa: bool = True,
     ):
         k_cache: List[torch.Tensor] = []
         v_cache: List[torch.Tensor] = []
+        cache_len: int = 0
         for i in range(self.num_blocks):
-            x, k_cache_, v_cache_ = self.blocks[i].process_prompt(x, attn_mask, padding_mask, torch_sdpa)
+            x, k_cache_, v_cache_, cache_len = self.blocks[i].process_prompt(
+                x, attn_mask, max_decode_steps, padding_mask, torch_sdpa
+            )
             k_cache.append(k_cache_)
             v_cache.append(v_cache_)
-        return x, k_cache, v_cache
+        return x, k_cache, v_cache, cache_len
 
     def decode_next_token(
         self,
         x: torch.Tensor,
         k_cache: List[torch.Tensor],
         v_cache: List[torch.Tensor],
+        cache_len: int,
         attn_mask: torch.Tensor = None,
         torch_sdpa: bool = True,
     ):
         for i in range(self.num_blocks):
             x, k_cache[i], v_cache[i] = self.blocks[i].decode_next_token(
-                x, k_cache[i], v_cache[i], attn_mask, torch_sdpa
+                x, k_cache[i], v_cache[i], cache_len, attn_mask, torch_sdpa
             )
-        return x, k_cache, v_cache
+        return x, k_cache, v_cache, cache_len + 1
 
 
 class Text2SemanticDecoder(nn.Module):
@@ -644,6 +659,7 @@ class Text2SemanticDecoder(nn.Module):
 
         k_cache = None
         v_cache = None
+        cache_len = 0
         ###################  first step ##########################
         assert y is not None, "Error: Prompt free is not supported batch_infer!"
         ref_free = False
@@ -717,9 +733,20 @@ class Text2SemanticDecoder(nn.Module):
         curr_y_len = prefix_len
         for idx in tqdm(range(MAX_AR_DECODE_STEPS)):
             if idx == 0:
-                xy_dec, k_cache, v_cache = self.t2s_transformer.process_prompt(xy_pos, attn_mask, None)
+                xy_dec, k_cache, v_cache, cache_len = self.t2s_transformer.process_prompt(
+                    xy_pos,
+                    attn_mask,
+                    MAX_AR_DECODE_STEPS,
+                    None,
+                )
             else:
-                xy_dec, k_cache, v_cache = self.t2s_transformer.decode_next_token(xy_pos, k_cache, v_cache, attn_mask)
+                xy_dec, k_cache, v_cache, cache_len = self.t2s_transformer.decode_next_token(
+                    xy_pos,
+                    k_cache,
+                    v_cache,
+                    cache_len,
+                    attn_mask,
+                )
             logits = self.ar_predict_layer(xy_dec[:, -1])
 
             if idx == 0:
@@ -867,6 +894,7 @@ class Text2SemanticDecoder(nn.Module):
 
         k_cache = None
         v_cache = None
+        cache_len = 0
         ###################  first step ##########################
         if y is not None:
             y_emb = self.ar_audio_embedding(y)
@@ -911,9 +939,19 @@ class Text2SemanticDecoder(nn.Module):
         for idx in tqdm(range(MAX_AR_DECODE_STEPS)):
             token_counter+=1
             if xy_attn_mask is not None:
-                xy_dec, k_cache, v_cache = self.t2s_transformer.process_prompt(xy_pos, xy_attn_mask, None)
+                xy_dec, k_cache, v_cache, cache_len = self.t2s_transformer.process_prompt(
+                    xy_pos,
+                    xy_attn_mask,
+                    MAX_AR_DECODE_STEPS,
+                    None,
+                )
             else:
-                xy_dec, k_cache, v_cache = self.t2s_transformer.decode_next_token(xy_pos, k_cache, v_cache)
+                xy_dec, k_cache, v_cache, cache_len = self.t2s_transformer.decode_next_token(
+                    xy_pos,
+                    k_cache,
+                    v_cache,
+                    cache_len,
+                )
 
             logits = self.ar_predict_layer(xy_dec[:, -1])
 
