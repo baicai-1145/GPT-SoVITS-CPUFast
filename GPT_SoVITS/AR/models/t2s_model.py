@@ -710,8 +710,8 @@ class Text2SemanticDecoder(nn.Module):
 
         padding_mask = padding_mask.view(bsz, 1, src_len).repeat(1, src_len, 1)
 
-        attn_mask: torch.Tensor = causal_mask.logical_or(padding_mask)
-        attn_mask = attn_mask.unsqueeze(1).expand(-1, self.num_head, -1, -1).bool()
+        prompt_attn_mask: torch.Tensor = causal_mask.logical_or(padding_mask)
+        prompt_attn_mask = prompt_attn_mask.unsqueeze(1).expand(-1, self.num_head, -1, -1).bool()
 
         # 正确的attn_mask应该是这样的：
         # |   pad_len   |  x_len  |  y_len  |
@@ -731,11 +731,18 @@ class Text2SemanticDecoder(nn.Module):
         idx_list = [None] * y.shape[0]
         y_buffer = _alloc_token_buffer(y, MAX_AR_DECODE_STEPS)
         curr_y_len = prefix_len
+        decode_attn_mask_full = torch.zeros(
+            (bsz, self.num_head, 1, src_len + MAX_AR_DECODE_STEPS),
+            dtype=torch.bool,
+            device=x.device,
+        )
+        decode_attn_mask_full[:, :, :, :src_len] = prompt_attn_mask[:, :, -1:, :]
+        decode_attn_mask = None
         for idx in tqdm(range(MAX_AR_DECODE_STEPS)):
             if idx == 0:
                 xy_dec, k_cache, v_cache, cache_len = self.t2s_transformer.process_prompt(
                     xy_pos,
-                    attn_mask,
+                    prompt_attn_mask,
                     MAX_AR_DECODE_STEPS,
                     None,
                 )
@@ -745,14 +752,9 @@ class Text2SemanticDecoder(nn.Module):
                     k_cache,
                     v_cache,
                     cache_len,
-                    attn_mask,
+                    decode_attn_mask,
                 )
             logits = self.ar_predict_layer(xy_dec[:, -1])
-
-            if idx == 0:
-                attn_mask = F.pad(attn_mask[:, :, -1].unsqueeze(-2), (0, 1), value=False)
-            else:
-                attn_mask = F.pad(attn_mask, (0, 1), value=False)
 
             if idx < 11:  ###至少预测出10个token不然不给停止（0.4s）
                 logits = logits[:, :-1] 
@@ -785,7 +787,9 @@ class Text2SemanticDecoder(nn.Module):
             if reserved_idx_of_batch_for_y is not None:
                 # index = torch.LongTensor(batch_idx_map).to(y.device)
                 y_buffer = torch.index_select(y_buffer, dim=0, index=reserved_idx_of_batch_for_y)
-                attn_mask = torch.index_select(attn_mask, dim=0, index=reserved_idx_of_batch_for_y)
+                decode_attn_mask_full = torch.index_select(
+                    decode_attn_mask_full, dim=0, index=reserved_idx_of_batch_for_y
+                )
                 samples = torch.index_select(samples, dim=0, index=reserved_idx_of_batch_for_y)
                 if k_cache is not None:
                     for i in range(len(k_cache)):
@@ -810,6 +814,8 @@ class Text2SemanticDecoder(nn.Module):
                     print("bad zero prediction")
                 print(f"T2S Decoding EOS [{prefix_len} -> {curr_y_len}]")
                 break
+
+            decode_attn_mask = decode_attn_mask_full[:, :, :, : cache_len + 1]
 
             ####################### update next step ###################################
             y_emb = self.ar_audio_embedding(samples)
