@@ -1,15 +1,13 @@
 import os
 import re
 
-import cn2an
-from pypinyin import lazy_pinyin, Style
+from pypinyin import Style
 from pypinyin.contrib.tone_convert import to_finals_tone3, to_initials
 
 from text.symbols import punctuation
 from text.tone_sandhi import ToneSandhi
 from text.zh_normalization.text_normlization import TextNormalizer
 
-normalizer = lambda x: cn2an.transform(x, "an2cn")
 text_normalizer = TextNormalizer()
 
 current_file_path = os.path.dirname(__file__)
@@ -22,21 +20,22 @@ import jieba_fast
 import logging
 
 jieba_fast.setLogLevel(logging.CRITICAL)
-import jieba_fast.posseg as psg
+from text import jieba_posseg_fast as psg
 
 # is_g2pw_str = os.environ.get("is_g2pw", "True")##默认开启
 # is_g2pw = False#True if is_g2pw_str.lower() == 'true' else False
 is_g2pw = True  # True if is_g2pw_str.lower() == 'true' else False
 if is_g2pw:
     # print("当前使用g2pw进行拼音推理")
-    from text.g2pw import G2PWPinyin, correct_pronunciation
+    from text.g2pw.onnx_api import G2PWOnnxConverter
+    from text.g2pw.pronunciation import correct_pronunciation
 
     parent_directory = os.path.dirname(current_file_path)
-    g2pw = G2PWPinyin(
+    g2pw = G2PWOnnxConverter(
         model_dir="GPT_SoVITS/text/G2PWModel",
+        style="pinyin",
         model_source=os.environ.get("bert_path", "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"),
-        v_to_u=False,
-        neutral_tone_with_five=True,
+        enable_non_tradional_chinese=True,
     )
 
 rep_map = {
@@ -79,6 +78,8 @@ def g2p(text):
 
 
 def _get_initials_finals(word):
+    from pypinyin import lazy_pinyin
+
     initials = []
     finals = []
 
@@ -186,7 +187,7 @@ def _g2p(segments):
     processed_segments = [re.sub("[a-zA-Z]+", "", seg) for seg in segments]
     if is_g2pw:
         batch_inputs = [seg for seg in processed_segments if seg]
-        g2pw_batch_results = g2pw._g2pw(batch_inputs) if batch_inputs else []
+        g2pw_batch_results = g2pw(batch_inputs) if batch_inputs else []
 
     for seg in processed_segments:
         pinyins = []

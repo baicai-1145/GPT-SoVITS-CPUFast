@@ -172,6 +172,7 @@ from text.cleaner import clean_text
 from module.mel_processing import spectrogram_torch
 import config as global_config
 import logging
+import json
 import subprocess
 
 
@@ -200,6 +201,13 @@ def is_full(*items):  # 任意一项为空返回False
 
 
 bigvgan_model = hifigan_model = sv_cn_model = None
+BENCH_TIMING_ENABLED = os.environ.get("GPTSOVITS_BENCH_TIMING", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+bench_timing_records = []
 
 
 def clean_hifigan_model():
@@ -1032,6 +1040,19 @@ def get_tts_wav(
         audio_opt.append(zero_wav)
         audio_opt = np.concatenate(audio_opt, 0)
         t4 = ttime()
+
+        if BENCH_TIMING_ENABLED:
+            bench_record = {
+                "text": text,
+                "text_language": text_language,
+                "ref_prep_sec": round(t1 - t0, 6),
+                "frontend_sec": round(t2 - t1, 6),
+                "t2s_sec": round(t3 - t2, 6),
+                "vits_sec": round(t4 - t3, 6),
+                "total_sec": round(t4 - t0, 6),
+            }
+            bench_timing_records.append(bench_record)
+            logger.info("BENCH_TIMING %s", json.dumps(bench_record, ensure_ascii=False))
 
         if version in {"v1", "v2", "v2Pro", "v2ProPlus"}:
             sr = 32000

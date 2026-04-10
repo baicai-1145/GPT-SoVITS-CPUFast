@@ -3,16 +3,16 @@
 
 import json
 import os
+import pickle
 import warnings
 import zipfile
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import onnxruntime
-import requests
 from opencc import OpenCC
 from pypinyin import Style, pinyin
-from transformers.models.auto.tokenization_auto import AutoTokenizer
+from tokenizers import Tokenizer
 
 from ..zh_normalization.char_convert import tranditional_to_simplified
 from .dataset import get_char_phoneme_labels, get_phoneme_labels, prepare_onnx_input
@@ -26,6 +26,23 @@ except Exception:
 warnings.filterwarnings("ignore")
 
 model_version = "1.1"
+STATIC_ASSETS_CACHE_VERSION = 1
+
+
+class _TokenizerAdapter:
+    def __init__(self, tokenizer_file: str):
+        self._tokenizer = Tokenizer.from_file(tokenizer_file)
+        self._unk_id = self._tokenizer.token_to_id("[UNK]")
+
+    def tokenize(self, text: str) -> List[str]:
+        return self._tokenizer.encode(text, add_special_tokens=False).tokens
+
+    def convert_tokens_to_ids(self, tokens: List[str]) -> List[int]:
+        ids = []
+        for token in tokens:
+            token_id = self._tokenizer.token_to_id(token)
+            ids.append(self._unk_id if token_id is None else token_id)
+        return ids
 
 
 def predict(session, onnx_input: Dict[str, Any], labels: List[str]) -> Tuple[List[str], List[float]]:
@@ -71,8 +88,129 @@ def _find_first_existing_file(*paths: str) -> str:
     raise FileNotFoundError(f"Files not found: {paths}")
 
 
+def _get_static_asset_sources(model_dir: str) -> Dict[str, str]:
+    default_asset_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "G2PWModel"))
+    candidate_asset_dirs = [model_dir, default_asset_dir]
+    return {
+        "polyphonic_chars": os.path.join(model_dir, "POLYPHONIC_CHARS.txt"),
+        "monophonic_chars": os.path.join(model_dir, "MONOPHONIC_CHARS.txt"),
+        "bopomofo_to_pinyin": _find_first_existing_file(
+            os.path.join(candidate_asset_dirs[0], "bopomofo_to_pinyin_wo_tune_dict.json"),
+            os.path.join(candidate_asset_dirs[1], "bopomofo_to_pinyin_wo_tune_dict.json"),
+        ),
+        "char_bopomofo": _find_first_existing_file(
+            os.path.join(candidate_asset_dirs[0], "char_bopomofo_dict.json"),
+            os.path.join(candidate_asset_dirs[1], "char_bopomofo_dict.json"),
+        ),
+    }
+
+
+def _get_static_assets_cache_path(model_dir: str, use_char_phoneme: bool, use_mask: bool) -> str:
+    return os.path.join(
+        model_dir,
+        f"g2pw_static_assets_v{STATIC_ASSETS_CACHE_VERSION}_cp{int(use_char_phoneme)}_mask{int(use_mask)}.pickle",
+    )
+
+
+def _build_static_assets(model_dir: str, use_char_phoneme: bool, use_mask: bool) -> Dict[str, Any]:
+    sources = _get_static_asset_sources(model_dir)
+    polyphonic_chars = [
+        line.split("\t") for line in open(sources["polyphonic_chars"], encoding="utf-8").read().strip().split("\n")
+    ]
+    monophonic_chars = [
+        line.split("\t") for line in open(sources["monophonic_chars"], encoding="utf-8").read().strip().split("\n")
+    ]
+    labels, char2phonemes = (
+        get_char_phoneme_labels(polyphonic_chars=polyphonic_chars)
+        if use_char_phoneme
+        else get_phoneme_labels(polyphonic_chars=polyphonic_chars)
+    )
+    chars = sorted(list(char2phonemes.keys()))
+    char2id = {char: idx for idx, char in enumerate(chars)}
+    char_phoneme_masks = (
+        {
+            char: [1 if i in char2phonemes[char] else 0 for i in range(len(labels))]
+            for char in char2phonemes
+        }
+        if use_mask
+        else None
+    )
+    non_polyphonic = {
+        "一",
+        "不",
+        "和",
+        "咋",
+        "嗲",
+        "剖",
+        "差",
+        "攢",
+        "倒",
+        "難",
+        "奔",
+        "勁",
+        "拗",
+        "肖",
+        "瘙",
+        "誒",
+        "泊",
+        "听",
+        "噢",
+    }
+    non_monophonic = {"似", "攢"}
+    polyphonic_chars_new = set(chars)
+    for char in non_polyphonic:
+        polyphonic_chars_new.discard(char)
+    monophonic_chars_dict = {char: phoneme for char, phoneme in monophonic_chars}
+    for char in non_monophonic:
+        monophonic_chars_dict.pop(char, None)
+
+    with open(sources["bopomofo_to_pinyin"], "r", encoding="utf-8") as fr:
+        bopomofo_convert_dict = json.load(fr)
+    with open(sources["char_bopomofo"], "r", encoding="utf-8") as fr:
+        char_bopomofo_dict = json.load(fr)
+
+    return {
+        "cache_version": STATIC_ASSETS_CACHE_VERSION,
+        "source_mtimes": {key: os.path.getmtime(path) for key, path in sources.items()},
+        "labels": labels,
+        "char2phonemes": char2phonemes,
+        "chars": chars,
+        "char2id": char2id,
+        "char_phoneme_masks": char_phoneme_masks,
+        "polyphonic_chars_new": polyphonic_chars_new,
+        "monophonic_chars_dict": monophonic_chars_dict,
+        "bopomofo_convert_dict": bopomofo_convert_dict,
+        "char_bopomofo_dict": char_bopomofo_dict,
+    }
+
+
+def _load_or_build_static_assets(model_dir: str, use_char_phoneme: bool, use_mask: bool) -> Dict[str, Any]:
+    cache_path = _get_static_assets_cache_path(model_dir, use_char_phoneme=use_char_phoneme, use_mask=use_mask)
+    sources = _get_static_asset_sources(model_dir)
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as fr:
+                cached = pickle.load(fr)
+            if cached.get("cache_version") == STATIC_ASSETS_CACHE_VERSION and all(
+                cached["source_mtimes"].get(key) == os.path.getmtime(path) for key, path in sources.items()
+            ):
+                return cached
+        except Exception:
+            pass
+
+    built = _build_static_assets(model_dir, use_char_phoneme=use_char_phoneme, use_mask=use_mask)
+    try:
+        with open(cache_path, "wb") as fw:
+            pickle.dump(built, fw, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception:
+        pass
+    return built
+
+
 def download_and_decompress(model_dir: str = "G2PWModel/"):
     if not os.path.exists(model_dir):
+        import requests
+
         parent_directory = os.path.dirname(model_dir)
         zip_dir = os.path.join(parent_directory, "G2PWModel_1.1.zip")
         extract_dir = os.path.join(parent_directory, "G2PWModel_1.1")
@@ -108,70 +246,22 @@ class _G2PWBaseOnnxConverter:
 
         self.model_source = model_source if model_source else self.config.model_source
         self.enable_opencc = enable_non_tradional_chinese
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_source)
-
-        polyphonic_chars_path = os.path.join(self.model_dir, "POLYPHONIC_CHARS.txt")
-        monophonic_chars_path = os.path.join(self.model_dir, "MONOPHONIC_CHARS.txt")
-
-        self.polyphonic_chars = [
-            line.split("\t") for line in open(polyphonic_chars_path, encoding="utf-8").read().strip().split("\n")
-        ]
-        self.non_polyphonic = {
-            "一",
-            "不",
-            "和",
-            "咋",
-            "嗲",
-            "剖",
-            "差",
-            "攢",
-            "倒",
-            "難",
-            "奔",
-            "勁",
-            "拗",
-            "肖",
-            "瘙",
-            "誒",
-            "泊",
-            "听",
-            "噢",
-        }
-        self.non_monophonic = {"似", "攢"}
-        self.monophonic_chars = [
-            line.split("\t") for line in open(monophonic_chars_path, encoding="utf-8").read().strip().split("\n")
-        ]
-        self.labels, self.char2phonemes = (
-            get_char_phoneme_labels(polyphonic_chars=self.polyphonic_chars)
-            if self.config.use_char_phoneme
-            else get_phoneme_labels(polyphonic_chars=self.polyphonic_chars)
+        tokenizer_file = os.path.join(self.model_source, "tokenizer.json")
+        self.tokenizer = _TokenizerAdapter(tokenizer_file=tokenizer_file)
+        static_assets = _load_or_build_static_assets(
+            self.model_dir,
+            use_char_phoneme=self.config.use_char_phoneme,
+            use_mask=self.config.use_mask,
         )
-
-        self.chars = sorted(list(self.char2phonemes.keys()))
-        self.char2id = {char: idx for idx, char in enumerate(self.chars)}
-        self.char_phoneme_masks = (
-            {
-                char: [1 if i in self.char2phonemes[char] else 0 for i in range(len(self.labels))]
-                for char in self.char2phonemes
-            }
-            if self.config.use_mask
-            else None
-        )
-
-        self.polyphonic_chars_new = set(self.chars)
-        for char in self.non_polyphonic:
-            self.polyphonic_chars_new.discard(char)
-
-        self.monophonic_chars_dict = {char: phoneme for char, phoneme in self.monophonic_chars}
-        for char in self.non_monophonic:
-            self.monophonic_chars_dict.pop(char, None)
-
-        default_asset_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "G2PWModel"))
-        candidate_asset_dirs = [self.model_dir, default_asset_dir]
-        self.bopomofo_convert_dict = _load_json_from_candidates(
-            "bopomofo_to_pinyin_wo_tune_dict.json", candidate_asset_dirs
-        )
-        self.char_bopomofo_dict = _load_json_from_candidates("char_bopomofo_dict.json", candidate_asset_dirs)
+        self.labels = static_assets["labels"]
+        self.char2phonemes = static_assets["char2phonemes"]
+        self.chars = static_assets["chars"]
+        self.char2id = static_assets["char2id"]
+        self.char_phoneme_masks = static_assets["char_phoneme_masks"]
+        self.polyphonic_chars_new = static_assets["polyphonic_chars_new"]
+        self.monophonic_chars_dict = static_assets["monophonic_chars_dict"]
+        self.bopomofo_convert_dict = static_assets["bopomofo_convert_dict"]
+        self.char_bopomofo_dict = static_assets["char_bopomofo_dict"]
 
         self.style_convert_func = {
             "bopomofo": lambda x: x,
@@ -331,7 +421,7 @@ class G2PWOnnxConverter(_G2PWBaseOnnxConverter):
         )
 
         sess_options = onnxruntime.SessionOptions()
-        sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL
         sess_options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
         sess_options.intra_op_num_threads = 2
 

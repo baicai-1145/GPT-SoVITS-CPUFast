@@ -1,4 +1,5 @@
 import gc
+import json
 import math
 import os
 import random
@@ -38,6 +39,22 @@ from TTS_infer_pack.TextPreprocessor import TextPreprocessor
 from sv import SV
 
 resample_transform_dict = {}
+BENCH_CPU_ENABLED = os.environ.get("GPTSOVITS_BENCH_CPU", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+def get_process_cpu_time_sec() -> float:
+    return time.process_time()
+
+
+def calc_cpu_util_pct(cpu_time_sec: float, wall_time_sec: float, cpu_count: int) -> float:
+    if cpu_time_sec <= 0 or wall_time_sec <= 0 or cpu_count <= 0:
+        return 0.0
+    return max(0.0, cpu_time_sec / wall_time_sec / cpu_count * 100.0)
 
 
 def resample(audio_tensor, sr0, sr1, device):
@@ -1130,6 +1147,8 @@ class TTS:
 
         ###### setting reference audio and prompt text preprocessing ########
         t0 = time.perf_counter()
+        cpu_count = os.cpu_count() or 1
+        c0 = get_process_cpu_time_sec() if BENCH_CPU_ENABLED else 0.0
         if (ref_audio_path is not None) and (
             ref_audio_path != self.prompt_cache["ref_audio_path"]
             or (self.is_v2pro and self.prompt_cache["refer_spec"][0][1] is None)
@@ -1168,6 +1187,7 @@ class TTS:
 
         ###### text preprocessing ########
         t1 = time.perf_counter()
+        c1 = get_process_cpu_time_sec() if BENCH_CPU_ENABLED else 0.0
         data: list = None
         if not (return_fragment or streaming_mode):
             data = self.text_preprocessor.preprocess(text, text_lang, text_split_method, self.configs.version)
@@ -1223,16 +1243,20 @@ class TTS:
                 return batch[0]
 
         t2 = time.perf_counter()
+        c2 = get_process_cpu_time_sec() if BENCH_CPU_ENABLED else 0.0
         try:
             print("############ 推理 ############")
             ###### inference ######
             t_34 = 0.0
             t_45 = 0.0
+            cpu_34 = 0.0
+            cpu_45 = 0.0
             audio = []
             is_first_package = True
             output_sr = self.configs.sampling_rate if not self.configs.use_vocoder else self.vocoder_configs["sr"]
             for item in data:
                 t3 = time.perf_counter()
+                c3 = get_process_cpu_time_sec() if BENCH_CPU_ENABLED else 0.0
                 if return_fragment or streaming_mode:
                     item = make_batch(item)
                     if item is None:
@@ -1281,6 +1305,9 @@ class TTS:
                     )
                     t4 = time.perf_counter()
                     t_34 += t4 - t3
+                    if BENCH_CPU_ENABLED:
+                        c4 = get_process_cpu_time_sec()
+                        cpu_34 += c4 - c3
 
 
                     batch_audio_fragment = []
@@ -1375,6 +1402,9 @@ class TTS:
                     )
                     t4 = time.perf_counter()
                     t_34 += t4 - t3
+                    if BENCH_CPU_ENABLED:
+                        c4 = get_process_cpu_time_sec()
+                        cpu_34 += c4 - c3
                     phones = batch_phones[0].unsqueeze(0).to(self.configs.device)
                     is_first_chunk = True
 
@@ -1480,6 +1510,9 @@ class TTS:
 
                 t5 = time.perf_counter()
                 t_45 += t5 - t4
+                if BENCH_CPU_ENABLED:
+                    c5 = get_process_cpu_time_sec()
+                    cpu_45 += c5 - c4
                 if return_fragment:
                     print("%.3f\t%.3f\t%.3f\t%.3f" % (t1 - t0, t2 - t1, t4 - t3, t5 - t4))
                     yield self.audio_postprocess(
@@ -1500,7 +1533,50 @@ class TTS:
                     return
 
             if not (return_fragment or streaming_mode):
-                print("%.3f\t%.3f\t%.3f\t%.3f" % (t1 - t0, t2 - t1, t_34, t_45))
+                ref_prep_sec = t1 - t0
+                frontend_sec = t2 - t1
+                print("%.3f\t%.3f\t%.3f\t%.3f" % (ref_prep_sec, frontend_sec, t_34, t_45))
+                if BENCH_CPU_ENABLED:
+                    ref_prep_cpu_time_sec = max(0.0, c1 - c0)
+                    frontend_cpu_time_sec = max(0.0, c2 - c1)
+                    t2s_cpu_time_sec = max(0.0, cpu_34)
+                    vits_cpu_time_sec = max(0.0, cpu_45)
+                    total_sec = ref_prep_sec + frontend_sec + t_34 + t_45
+                    total_cpu_time_sec = (
+                        ref_prep_cpu_time_sec
+                        + frontend_cpu_time_sec
+                        + t2s_cpu_time_sec
+                        + vits_cpu_time_sec
+                    )
+                    print(
+                        "GPTSOVITS_BENCH_CPU "
+                        + json.dumps(
+                            {
+                                "cpu_count": cpu_count,
+                                "ref_prep_cpu_time_sec": round(ref_prep_cpu_time_sec, 6),
+                                "ref_prep_cpu_util_pct": round(
+                                    calc_cpu_util_pct(ref_prep_cpu_time_sec, ref_prep_sec, cpu_count), 3
+                                ),
+                                "frontend_cpu_time_sec": round(frontend_cpu_time_sec, 6),
+                                "frontend_cpu_util_pct": round(
+                                    calc_cpu_util_pct(frontend_cpu_time_sec, frontend_sec, cpu_count), 3
+                                ),
+                                "t2s_cpu_time_sec": round(t2s_cpu_time_sec, 6),
+                                "t2s_cpu_util_pct": round(
+                                    calc_cpu_util_pct(t2s_cpu_time_sec, t_34, cpu_count), 3
+                                ),
+                                "vits_cpu_time_sec": round(vits_cpu_time_sec, 6),
+                                "vits_cpu_util_pct": round(
+                                    calc_cpu_util_pct(vits_cpu_time_sec, t_45, cpu_count), 3
+                                ),
+                                "total_cpu_time_sec": round(total_cpu_time_sec, 6),
+                                "total_cpu_util_pct": round(
+                                    calc_cpu_util_pct(total_cpu_time_sec, total_sec, cpu_count), 3
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
                 if len(audio) == 0:
                     yield output_sr, np.zeros(int(output_sr), dtype=np.int16)
                     return
