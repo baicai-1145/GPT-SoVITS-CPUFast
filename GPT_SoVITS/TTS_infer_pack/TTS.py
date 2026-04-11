@@ -1624,22 +1624,33 @@ class TTS:
                                 for i in range(1, len(audio_frag_end_idx))
                             ]
                         else:
-                            # ## vits串行推理
-                            for i, idx in enumerate(tqdm(idx_list)):
-                                phones = batch_phones[i].unsqueeze(0).to(self.configs.device)
-                                _pred_semantic = (
-                                    pred_semantic_list[i][-idx:].unsqueeze(0).unsqueeze(0)
-                                )  # .unsqueeze(0)#mq要多unsqueeze一次
-                                audio_fragment = self.vits_model.decode(
-                                        _pred_semantic,
-                                        phones,
-                                        refer_audio_spec,
-                                        speed=speed_factor,
-                                        sv_emb=sv_emb,
-                                        ge=decode_ge,
-                                        ge_text=decode_ge_text,
-                                    ).detach()[0, 0, :]
-                                batch_audio_fragment.append(audio_fragment)  ###试试重建不带上prompt部分
+                            pred_semantic_list = [item[-idx:] for item, idx in zip(pred_semantic_list, idx_list)]
+                            if hasattr(self.vits_model, "prepare_decode_latent"):
+                                print(f"{i18n('前半段批量合成中')}...")
+                                batch_audio_fragment = self.non_vocoder_synthesis_batched_infer(
+                                    pred_semantic_list,
+                                    batch_phones,
+                                    refer_audio_spec,
+                                    speed=speed_factor,
+                                    sv_emb=sv_emb,
+                                    ge=decode_ge,
+                                    ge_text=decode_ge_text,
+                                )
+                            else:
+                                # ## vits串行推理 fallback
+                                for i, pred_semantic in enumerate(tqdm(pred_semantic_list)):
+                                    phones = batch_phones[i].unsqueeze(0).to(self.configs.device)
+                                    _pred_semantic = pred_semantic.unsqueeze(0).unsqueeze(0)
+                                    audio_fragment = self.vits_model.decode(
+                                            _pred_semantic,
+                                            phones,
+                                            refer_audio_spec,
+                                            speed=speed_factor,
+                                            sv_emb=sv_emb,
+                                            ge=decode_ge,
+                                            ge_text=decode_ge_text,
+                                        ).detach()[0, 0, :]
+                                    batch_audio_fragment.append(audio_fragment)  ###试试重建不带上prompt部分
                     else:
                         if vits_parallel_infer:
                             print(f"{i18n('并行合成中')}...")
