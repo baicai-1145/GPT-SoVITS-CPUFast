@@ -1264,6 +1264,8 @@ class TTS:
         actual_seed = set_seed(seed)
         parallel_infer = inputs.get("parallel_infer", True)
         vits_parallel_infer = inputs.get("vits_parallel_infer", parallel_infer)
+        t2s_disable_batch_shrink = inputs.get("t2s_disable_batch_shrink", False)
+        t2s_batch_shrink_when_active_lte = inputs.get("t2s_batch_shrink_when_active_lte", 0)
         repetition_penalty = inputs.get("repetition_penalty", 1.35)
         sample_steps = inputs.get("sample_steps", 32)
         super_sampling = inputs.get("super_sampling", False)
@@ -1559,6 +1561,8 @@ class TTS:
                         early_stop_num=self.configs.hz * self.configs.max_sec,
                         max_len=max_len,
                         repetition_penalty=repetition_penalty,
+                        disable_batch_shrink=t2s_disable_batch_shrink,
+                        batch_shrink_when_active_lte=t2s_batch_shrink_when_active_lte,
                     )
                     t4 = time.perf_counter()
                     t_34 += t4 - t3

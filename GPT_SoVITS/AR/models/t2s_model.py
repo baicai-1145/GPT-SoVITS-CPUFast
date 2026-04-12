@@ -1,14 +1,13 @@
 # modified from https://github.com/yangdongchao/SoundStorm/blob/master/soundstorm/s1/AR/models/t2s_model.py
 # reference: https://github.com/lifeiteng/vall-e
 import math
+import time
 from typing import List, Optional
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 from torchmetrics.classification import MulticlassAccuracy
-from tqdm import tqdm
-
 from AR.models.utils import (
     dpo_loss,
     get_batch_logps,
@@ -47,6 +46,44 @@ def _alloc_token_buffer(initial_tokens: torch.Tensor, max_decode_steps: int) -> 
     if prefix_len > 0:
         buffer[:, :prefix_len] = initial_tokens
     return buffer
+
+
+def _compact_token_buffer(buffer: torch.Tensor, index: torch.Tensor, used_length: int) -> torch.Tensor:
+    compacted = buffer.new_empty((int(index.numel()), buffer.shape[1]))
+    if used_length > 0:
+        compacted[:, :used_length] = torch.index_select(buffer[:, :used_length], dim=0, index=index)
+    return compacted
+
+
+def _compact_cache_buffer(cache: torch.Tensor, index: torch.Tensor, used_length: int) -> torch.Tensor:
+    compacted = cache.new_empty((int(index.numel()), cache.shape[1], cache.shape[2]))
+    if used_length > 0:
+        compacted[:, :used_length, :] = torch.index_select(cache[:, :used_length, :], dim=0, index=index)
+    return compacted
+
+
+def _compact_decode_attn_mask_full(mask: torch.Tensor, index: torch.Tensor, prompt_width: int) -> torch.Tensor:
+    compacted = mask.new_zeros((int(index.numel()), mask.shape[1], mask.shape[2], mask.shape[3]))
+    if prompt_width > 0:
+        compacted[:, :, :, :prompt_width] = torch.index_select(mask[:, :, :, :prompt_width], dim=0, index=index)
+    return compacted
+
+
+def _get_benchmark_probe(model) -> Optional[dict]:
+    probe = getattr(model, "_benchmark_probe", None)
+    if isinstance(probe, dict):
+        return probe
+    return None
+
+
+def _probe_add(probe: Optional[dict], key: str, delta: float) -> None:
+    if probe is not None:
+        probe[key] = probe.get(key, 0.0) + float(delta)
+
+
+def _probe_inc(probe: Optional[dict], key: str, delta: int = 1) -> None:
+    if probe is not None:
+        probe[key] = int(probe.get(key, 0)) + int(delta)
 
 
 # @torch.jit.script ## 使用的话首次推理会非常慢，而且推理速度不稳定
@@ -560,7 +597,7 @@ class Text2SemanticDecoder(nn.Module):
         x_len = x.shape[1]
         x_attn_mask = torch.zeros((x_len, x_len), dtype=torch.bool)
         stop = False
-        for _ in tqdm(range(1500)):
+        for _ in range(1500):
             y_emb = self.ar_audio_embedding(y)
             y_pos = self.ar_audio_position(y_emb)
             # x 和逐渐增长的 y 一起输入给模型
@@ -586,7 +623,6 @@ class Text2SemanticDecoder(nn.Module):
             samples = topk_sampling(logits, top_k=top_k, top_p=1.0, temperature=temperature)
 
             if early_stop_num != -1 and (y.shape[1] - prefix_len) > early_stop_num:
-                print("use early stop num:", early_stop_num)
                 stop = True
 
             if torch.argmax(logits, dim=-1)[0] == self.EOS or samples[0, 0] == self.EOS:
@@ -595,8 +631,6 @@ class Text2SemanticDecoder(nn.Module):
             if stop:
                 if prompts.shape[1] == y.shape[1]:
                     y = torch.concat([y, torch.zeros_like(samples)], dim=1)
-                    print("bad zero prediction")
-                print(f"T2S Decoding EOS [{prefix_len} -> {y.shape[1]}]")
                 break
             # 本次生成的 semantic_ids 和之前的 y 构成新的 y
             # print(samples.shape)#[1,1]#第一个1是bs
@@ -638,7 +672,12 @@ class Text2SemanticDecoder(nn.Module):
             )
 
         max_len = kwargs.get("max_len", x_lens.max())
+        probe = _get_benchmark_probe(self)
+        torch_sdpa = bool(kwargs.get("torch_sdpa", True))
+        disable_batch_shrink = bool(kwargs.get("disable_batch_shrink", False))
+        batch_shrink_when_active_lte = int(kwargs.get("batch_shrink_when_active_lte", 0))
         x_list = []
+        t_probe = time.perf_counter() if probe is not None else 0.0
         for x_item, bert_item in zip(x, bert_feature):
             # max_len = max(max_len, x_item.shape[0], bert_item.shape[1])
             x_item = self.ar_text_embedding(x_item.unsqueeze(0))
@@ -649,6 +688,10 @@ class Text2SemanticDecoder(nn.Module):
                 F.pad(x_item, (0, 0, max_len - x_item.shape[0], 0), value=0) if x_item.shape[0] < max_len else x_item
             )  ### padding left
             x_list.append(x_item)
+        if probe is not None:
+            _probe_add(probe, "text_embed_sec", time.perf_counter() - t_probe)
+            _probe_inc(probe, "batch_calls")
+            _probe_inc(probe, "batch_items_total", len(x_list))
         x: torch.Tensor = torch.stack(x_list, dim=0)
 
         # AR Decoder
@@ -664,6 +707,7 @@ class Text2SemanticDecoder(nn.Module):
         assert y is not None, "Error: Prompt free is not supported batch_infer!"
         ref_free = False
 
+        t_probe = time.perf_counter() if probe is not None else 0.0
         y_emb = self.ar_audio_embedding(y)
         y_len = y_emb.shape[1]
         prefix_len = y.shape[1]
@@ -712,6 +756,8 @@ class Text2SemanticDecoder(nn.Module):
 
         prompt_attn_mask: torch.Tensor = causal_mask.logical_or(padding_mask)
         prompt_attn_mask = prompt_attn_mask.unsqueeze(1).expand(-1, self.num_head, -1, -1).bool()
+        if probe is not None:
+            _probe_add(probe, "prompt_prep_sec", time.perf_counter() - t_probe)
 
         # 正确的attn_mask应该是这样的：
         # |   pad_len   |  x_len  |  y_len  |
@@ -729,6 +775,7 @@ class Text2SemanticDecoder(nn.Module):
         y_list = [None] * y.shape[0]
         batch_idx_map = list(range(y.shape[0]))
         idx_list = [None] * y.shape[0]
+        active_rows = torch.ones((y.shape[0],), dtype=torch.bool, device=x.device)
         y_buffer = _alloc_token_buffer(y, MAX_AR_DECODE_STEPS)
         curr_y_len = prefix_len
         decode_attn_mask_full = torch.zeros(
@@ -738,71 +785,120 @@ class Text2SemanticDecoder(nn.Module):
         )
         decode_attn_mask_full[:, :, :, :src_len] = prompt_attn_mask[:, :, -1:, :]
         decode_attn_mask = None
-        for idx in tqdm(range(MAX_AR_DECODE_STEPS)):
+        for idx in range(MAX_AR_DECODE_STEPS):
+            _probe_inc(probe, "decode_steps")
             if idx == 0:
+                t_probe = time.perf_counter() if probe is not None else 0.0
                 xy_dec, k_cache, v_cache, cache_len = self.t2s_transformer.process_prompt(
                     xy_pos,
                     prompt_attn_mask,
                     MAX_AR_DECODE_STEPS,
                     None,
+                    torch_sdpa,
                 )
+                if probe is not None:
+                    _probe_add(probe, "decode_transformer_sec", time.perf_counter() - t_probe)
+                    _probe_inc(probe, "process_prompt_calls")
             else:
+                t_probe = time.perf_counter() if probe is not None else 0.0
                 xy_dec, k_cache, v_cache, cache_len = self.t2s_transformer.decode_next_token(
                     xy_pos,
                     k_cache,
                     v_cache,
                     cache_len,
                     decode_attn_mask,
+                    torch_sdpa,
                 )
+                if probe is not None:
+                    _probe_add(probe, "decode_transformer_sec", time.perf_counter() - t_probe)
+                    _probe_inc(probe, "decode_next_token_calls")
+            t_probe = time.perf_counter() if probe is not None else 0.0
             logits = self.ar_predict_layer(xy_dec[:, -1])
+            if probe is not None:
+                _probe_add(probe, "logits_sec", time.perf_counter() - t_probe)
 
             if idx < 11:  ###至少预测出10个token不然不给停止（0.4s）
                 logits = logits[:, :-1] 
 
             y = y_buffer[:, :curr_y_len]
+            if probe is not None:
+                _probe_add(probe, "sample_history_tokens_sum", curr_y_len)
+                _probe_add(probe, "sample_batch_items_sum", y.shape[0])
+            t_probe = time.perf_counter() if probe is not None else 0.0
             samples = sample(
                 logits, y, top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty, temperature=temperature
             )[0]
+            if probe is not None:
+                _probe_add(probe, "sample_sec", time.perf_counter() - t_probe)
             y_buffer[:, curr_y_len : curr_y_len + 1] = samples
             curr_y_len += 1
 
             ####### 移除batch中已经生成完毕的序列,进一步优化计算量
+            t_probe = time.perf_counter() if probe is not None else 0.0
             tokens = torch.argmax(logits, dim=-1)
             reserved_idx_of_batch_for_y = None
+            should_shrink = False
             if (self.EOS in samples[:, 0]) or (self.EOS in tokens):  ###如果生成到EOS，则停止
                 l1 = samples[:, 0] == self.EOS
                 l2 = tokens == self.EOS
-                l = l1.logical_or(l2)
+                l = active_rows.logical_and(l1.logical_or(l2))
                 removed_idx_of_batch_for_y = torch.where(l == True)[0].tolist()
-                reserved_idx_of_batch_for_y = torch.where(l == False)[0]
+                reserved_idx_of_batch_for_y = torch.where(active_rows.logical_and(l == False))[0]
                 # batch_indexs = torch.tensor(batch_idx_map, device=y.device)[removed_idx_of_batch_for_y]
                 for i in removed_idx_of_batch_for_y:
                     batch_index = batch_idx_map[i]
                     idx_list[batch_index] = idx
                     y_list[batch_index] = y_buffer[i, : curr_y_len - 1].clone()
 
-                batch_idx_map = [batch_idx_map[i] for i in reserved_idx_of_batch_for_y.tolist()]
+                active_count_after_remove = int(reserved_idx_of_batch_for_y.numel())
+                should_shrink = (
+                    (not disable_batch_shrink)
+                    and (
+                        batch_shrink_when_active_lte <= 0
+                        or active_count_after_remove <= batch_shrink_when_active_lte
+                    )
+                )
+
+                if not should_shrink:
+                    if removed_idx_of_batch_for_y:
+                        active_rows[torch.tensor(removed_idx_of_batch_for_y, device=active_rows.device)] = False
+                    if probe is not None and not disable_batch_shrink:
+                        _probe_inc(probe, "batch_shrink_deferred_events")
+                        _probe_inc(probe, "batch_shrink_deferred_items", int(len(removed_idx_of_batch_for_y)))
+                else:
+                    batch_idx_map = [batch_idx_map[i] for i in reserved_idx_of_batch_for_y.tolist()]
+            if probe is not None:
+                _probe_add(probe, "stop_check_sec", time.perf_counter() - t_probe)
 
             # 只保留batch中未生成完毕的序列
-            if reserved_idx_of_batch_for_y is not None:
-                # index = torch.LongTensor(batch_idx_map).to(y.device)
-                y_buffer = torch.index_select(y_buffer, dim=0, index=reserved_idx_of_batch_for_y)
-                decode_attn_mask_full = torch.index_select(
-                    decode_attn_mask_full, dim=0, index=reserved_idx_of_batch_for_y
+            if reserved_idx_of_batch_for_y is not None and should_shrink:
+                t_probe = time.perf_counter() if probe is not None else 0.0
+                removed_count = int(len(removed_idx_of_batch_for_y))
+                y_buffer = _compact_token_buffer(y_buffer, reserved_idx_of_batch_for_y, curr_y_len)
+                decode_attn_mask_full = _compact_decode_attn_mask_full(
+                    decode_attn_mask_full, reserved_idx_of_batch_for_y, src_len
                 )
                 samples = torch.index_select(samples, dim=0, index=reserved_idx_of_batch_for_y)
                 if k_cache is not None:
                     for i in range(len(k_cache)):
-                        k_cache[i] = torch.index_select(k_cache[i], dim=0, index=reserved_idx_of_batch_for_y)
-                        v_cache[i] = torch.index_select(v_cache[i], dim=0, index=reserved_idx_of_batch_for_y)
+                        k_cache[i] = _compact_cache_buffer(k_cache[i], reserved_idx_of_batch_for_y, cache_len)
+                        v_cache[i] = _compact_cache_buffer(v_cache[i], reserved_idx_of_batch_for_y, cache_len)
+                active_rows = torch.ones((y_buffer.shape[0],), dtype=torch.bool, device=active_rows.device)
+                if probe is not None:
+                    _probe_add(probe, "shrink_sec", time.perf_counter() - t_probe)
+                    _probe_inc(probe, "batch_shrink_events")
+                    _probe_inc(probe, "batch_shrink_items", removed_count)
+            elif reserved_idx_of_batch_for_y is not None and disable_batch_shrink and probe is not None:
+                _probe_inc(probe, "batch_shrink_skipped_events")
+                _probe_inc(probe, "batch_shrink_items", int(len(removed_idx_of_batch_for_y)))
 
             if (early_stop_num != -1 and (curr_y_len - prefix_len) > early_stop_num) or idx == MAX_AR_DECODE_STEPS - 1:
-                print("use early stop num:", early_stop_num)
                 stop = True
                 for i, batch_index in enumerate(batch_idx_map):
                     batch_index = batch_idx_map[i]
-                    idx_list[batch_index] = idx
-                    y_list[batch_index] = y_buffer[i, : curr_y_len - 1].clone()
+                    if idx_list[batch_index] is None:
+                        idx_list[batch_index] = idx
+                        y_list[batch_index] = y_buffer[i, : curr_y_len - 1].clone()
 
             if None not in idx_list:
                 stop = True
@@ -811,23 +907,26 @@ class Text2SemanticDecoder(nn.Module):
                 if curr_y_len == 0:
                     y_buffer[:, 0:1] = torch.zeros_like(samples)
                     curr_y_len = 1
-                    print("bad zero prediction")
-                print(f"T2S Decoding EOS [{prefix_len} -> {curr_y_len}]")
                 break
 
             decode_attn_mask = decode_attn_mask_full[:, :, :, : cache_len + 1]
 
             ####################### update next step ###################################
+            t_probe = time.perf_counter() if probe is not None else 0.0
             y_emb = self.ar_audio_embedding(samples)
             xy_pos = y_emb * self.ar_audio_position.x_scale + self.ar_audio_position.alpha * self.ar_audio_position.pe[
                 :, y_len + idx
             ].to(dtype=y_emb.dtype, device=y_emb.device)
+            if probe is not None:
+                _probe_add(probe, "next_pos_sec", time.perf_counter() - t_probe)
 
         if None in idx_list:
             for i in range(x.shape[0]):
                 if idx_list[i] is None:
                     idx_list[i] = MAX_AR_DECODE_STEPS - 1  ###如果没有生成到EOS，就用最大长度代替
 
+        if probe is not None:
+            _probe_add(probe, "generated_tokens_sum", max(curr_y_len - prefix_len, 0))
         if ref_free:
             return y_list, [0] * x.shape[0]
         # print(idx_list)
@@ -884,11 +983,18 @@ class Text2SemanticDecoder(nn.Module):
         mute_emb_sim_matrix = kwargs.get("mute_emb_sim_matrix", None)
         chunk_split_thershold = kwargs.get("chunk_split_thershold", 0.3)
         check_token_num = 2
+        probe = _get_benchmark_probe(self)
+        torch_sdpa = bool(kwargs.get("torch_sdpa", True))
 
 
+        t_probe = time.perf_counter() if probe is not None else 0.0
         x = self.ar_text_embedding(x)
         x = x + self.bert_proj(bert_feature.transpose(1, 2))
         x = self.ar_text_position(x)
+        if probe is not None:
+            _probe_add(probe, "text_embed_sec", time.perf_counter() - t_probe)
+            _probe_inc(probe, "batch_calls")
+            _probe_inc(probe, "batch_items_total", int(x.shape[0]))
 
         # AR Decoder
         y = prompts
@@ -902,6 +1008,7 @@ class Text2SemanticDecoder(nn.Module):
         v_cache = None
         cache_len = 0
         ###################  first step ##########################
+        t_probe = time.perf_counter() if probe is not None else 0.0
         if y is not None:
             y_emb = self.ar_audio_embedding(y)
             y_len = y_emb.shape[1]
@@ -937,29 +1044,46 @@ class Text2SemanticDecoder(nn.Module):
             .view(bsz, self.num_head, src_len, src_len)
             .to(device=x.device, dtype=torch.bool)
         )
+        if probe is not None:
+            _probe_add(probe, "prompt_prep_sec", time.perf_counter() - t_probe)
 
         token_counter = 0
         curr_ptr = prefix_len
         y_buffer = _alloc_token_buffer(y, MAX_AR_DECODE_STEPS)
         curr_y_len = prefix_len
-        for idx in tqdm(range(MAX_AR_DECODE_STEPS)):
+        for idx in range(MAX_AR_DECODE_STEPS):
             token_counter+=1
+            _probe_inc(probe, "decode_steps")
             if xy_attn_mask is not None:
+                t_probe = time.perf_counter() if probe is not None else 0.0
                 xy_dec, k_cache, v_cache, cache_len = self.t2s_transformer.process_prompt(
                     xy_pos,
                     xy_attn_mask,
                     MAX_AR_DECODE_STEPS,
                     None,
+                    torch_sdpa,
                 )
+                if probe is not None:
+                    _probe_add(probe, "decode_transformer_sec", time.perf_counter() - t_probe)
+                    _probe_inc(probe, "process_prompt_calls")
             else:
+                t_probe = time.perf_counter() if probe is not None else 0.0
                 xy_dec, k_cache, v_cache, cache_len = self.t2s_transformer.decode_next_token(
                     xy_pos,
                     k_cache,
                     v_cache,
                     cache_len,
+                    None,
+                    torch_sdpa,
                 )
+                if probe is not None:
+                    _probe_add(probe, "decode_transformer_sec", time.perf_counter() - t_probe)
+                    _probe_inc(probe, "decode_next_token_calls")
 
+            t_probe = time.perf_counter() if probe is not None else 0.0
             logits = self.ar_predict_layer(xy_dec[:, -1])
+            if probe is not None:
+                _probe_add(probe, "logits_sec", time.perf_counter() - t_probe)
 
             if idx == 0:
                 xy_attn_mask = None
@@ -967,14 +1091,20 @@ class Text2SemanticDecoder(nn.Module):
                 logits = logits[:, :-1]
 
             y = y_buffer[:, :curr_y_len]
+            if probe is not None:
+                _probe_add(probe, "sample_history_tokens_sum", curr_y_len)
+                _probe_add(probe, "sample_batch_items_sum", y.shape[0])
+            t_probe = time.perf_counter() if probe is not None else 0.0
             samples = sample(
                 logits, y, top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty, temperature=temperature
             )[0]
+            if probe is not None:
+                _probe_add(probe, "sample_sec", time.perf_counter() - t_probe)
             y_buffer[:, curr_y_len : curr_y_len + 1] = samples
             curr_y_len += 1
 
+            t_probe = time.perf_counter() if probe is not None else 0.0
             if early_stop_num != -1 and (curr_y_len - prefix_len) > early_stop_num:
-                print("use early stop num:", early_stop_num)
                 stop = True
 
             if torch.argmax(logits, dim=-1)[0] == self.EOS or samples[0, 0] == self.EOS:
@@ -984,12 +1114,13 @@ class Text2SemanticDecoder(nn.Module):
 
             if idx == MAX_AR_DECODE_STEPS - 1:
                 stop = True
+            if probe is not None:
+                _probe_add(probe, "stop_check_sec", time.perf_counter() - t_probe)
 
             if stop:
                 if curr_y_len == 0:
                     y_buffer[:, 0:1] = torch.zeros_like(samples)
                     curr_y_len = 1
-                    print("bad zero prediction")
                 # print(f"T2S Decoding EOS [{prefix_len} -> {y.shape[1]}]")
                 if streaming_mode:
                     final_y = y_buffer[:, :curr_y_len]
@@ -1020,15 +1151,20 @@ class Text2SemanticDecoder(nn.Module):
 
 
             ####################### update next step ###################################
+            t_probe = time.perf_counter() if probe is not None else 0.0
             y_emb = self.ar_audio_embedding(samples)
             xy_pos = y_emb * self.ar_audio_position.x_scale + self.ar_audio_position.alpha * self.ar_audio_position.pe[
                 :, y_len + idx
             ].to(dtype=y_emb.dtype, device=y_emb.device)
+            if probe is not None:
+                _probe_add(probe, "next_pos_sec", time.perf_counter() - t_probe)
 
 
 
         if not streaming_mode:
             y = y_buffer[:, :curr_y_len]
+            if probe is not None:
+                _probe_add(probe, "generated_tokens_sum", max(curr_y_len - prefix_len, 0))
             if ref_free:
                 yield y, 0
             yield y, idx
