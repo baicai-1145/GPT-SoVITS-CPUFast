@@ -89,6 +89,68 @@ python GPT_SoVITS/inference_webui_fast.py
 - `install.sh` and `install.ps1` now download inference assets by version instead of the full pretrained bundle.
 - `NLTK` and `OpenJTalk` dictionary downloads remain enabled by default.
 
+## Speed Summary
+
+Without changing recognition behavior, prosody, speaker identity, or audio quality, this CPU fork currently delivers:
+
+- Chinese end-to-end `zh_pure`: `wall_sec 15.136264 -> 8.309471`, about `-45.1%`
+- End-to-end: `wall_sec 10.431826 -> 7.046743`, about `-32.4%`
+- Preprocessing: `frontend_sec 0.867065 -> 0.569571`, about `-34.3%`
+- T2S: `t2s_sec 4.023657 -> 2.268571`, about `-43.6%`
+- VITS: `vits_sec 5.137876 -> 3.969286`, about `-22.7%`
+
+Largest landed stage wins so far:
+
+- Preprocessing:
+  - Chinese warm multi-sentence BERT frontend: `0.855s -> 0.131s`, about `-84.7%`
+  - Korean cold frontend path: `0.791s -> 0.155s`, about `-80.4%`
+- T2S: `stable_batch_remap` 7-case comparison `1.986543 -> 1.684446`, about `-15.2%`
+- VITS: `remove_weight_norm` `vits_only` comparison `4.256119 -> 4.102004`, about `-3.6%`
+
+## How The Speedups Were Achieved
+
+These gains do not come from sentence-level caching, quantization, or quality tradeoffs. The main work was removing CPU-side Python overhead, repeated preparation, repeated copies, and unnecessary cold-start costs from the real inference path.
+
+Chinese shows an even larger end-to-end gain than the overall average because it started from the heaviest path: it pays for both `g2pw` and BERT text features, so frontend reductions propagate directly into total latency.
+
+### What Was Deliberately Not Used
+
+- ONNX / ORT was not kept in the main inference path. `dec-only ORT`, `flow + dec ORT`, and larger graph-level ORT experiments were all tried, but on the current machine and dependency stack they did not produce a solution that was simultaneously quality-safe, faster, and lighter than the PyTorch path, so the runtime stayed on pure PyTorch.
+- The Chinese path was not simplified by dropping quality-critical frontend pieces. `g2pw` stayed, Chinese BERT stayed, and the project did not switch to lighter but lower-quality replacements such as `g2pm`, which are more likely to cause noticeable G2P errors on harder text, especially literary or classical material.
+- The main path also does not rely on secondary splitting just to manufacture larger batches. That direction was explored in benchmark-only form, but the results did not stay stable, and the `repeats=3` verification did not justify moving it into the runtime path.
+
+### Preprocessing / Frontend
+
+- English frontend work focused on cold start. Heavy first-request dependencies around `g2p_en.G2p` were reduced, `wordsegment.load()` was made lazy, `nltk.pos_tag` was narrowed to heteronym cases, and import-time overhead from `inflect/typeguard` was trimmed.
+- Korean frontend work removed an unrelated cold-start chain. `g2pk2` used to pull in `nltk/cmudict` even for pure Korean input; that path is now stubbed lazily so Korean requests no longer pay for the English dictionary on first use.
+- The biggest Chinese frontend win came from changing pure-Chinese multi-sentence BERT extraction from sentence-by-sentence serial execution to a batched path. The current path batches tokenization, BERT forward, and `word2ph` alignment for pure Chinese multi-sentence requests.
+- Chinese `g2pw` cold start was also reduced by lazily importing `requests`, shrinking tokenizer initialization down to direct `tokenizer.json` loading, and avoiding the larger `transformers` auto-dispatch chain during startup.
+- Chinese segmentation / POS loading was further reduced with local static assets so `jieba_fast.posseg` initialization does less repeated work, without introducing any sentence-level cache tied to user input.
+- Non-Chinese zero-BERT paths also gained simple length-based zero-tensor reuse so repeated all-zero feature allocation does less work.
+
+### T2S
+
+- The first layer of gains came from removing pure Python overhead from the hot path, including `tqdm` and hot-loop prints during decoding. These changes do not alter model numerics, but they do matter on CPU.
+- The next layer came from the shrink path. Previously, when some rows in a batch finished early, the code copied whole future-capacity buffers with `index_select`, including token buffers, KV caches, and masks that were never going to be used. The current path compacts only the valid prefix.
+- Another landed gain is `stable_batch_remap`. It is not a “never shrink” hack. It keeps exact behavior while stabilizing how active rows are remapped inside the batch, which reduces unnecessary compaction churn.
+- The deeper T2S gains came from addressing the actual `addmm` hotspots. The main path now uses exact-safe hybrid linear execution for high-frequency layers such as `MLP`, `qkv_proj`, and `out_proj`: `rows == 1` keeps the original `F.linear`, while larger cases use a more CPU-friendly `torch.addmm` path.
+- That backend work only became safe after fixing the load path as well. `t2s_transformer` is rebuilt after checkpoint loading so cached transposed weights are bound to the real loaded parameters instead of the pre-load initialization weights.
+
+### VITS
+
+- VITS optimization stayed conservative. The main strategy was to remove work that was being repeated for every batch instead of rewriting the model structure.
+- The first landed step was a run-level runtime cache in `TTS.run()` for reference-side objects that do not depend on the current input text, such as `refer_audio_spec`, `sv_emb`, `prompt_semantic_tokens`, and `prompt_phones`.
+- The second landed step moved decode-condition preparation out of repeated decode calls. `build_decode_condition()` lets `ge / ge_text` be computed once before the batch loop and then reused across decode calls.
+- The third landed step applies `remove_weight_norm()` directly to non-vocoder `Generator.dec`, removing weight-norm reparameterization overhead during inference. This is the main clearly logged stage-local VITS win currently kept in the codebase.
+- The worklog also records more aggressive VITS experiments that were tested but not kept, such as traced `dec` and more aggressive decode layout variants. The README only describes the parts that actually landed.
+
+### Load Path And Memory
+
+- `t2s_only` benchmark loading used to instantiate the full `TTS()` pipeline and then trim unused objects, which pushed peak memory far too high. That was replaced with a true lightweight load path that initializes only the minimum T2S-side objects.
+- The main inference load path was also reordered to avoid rebuilding large transposed-weight structures while the checkpoint dictionary was still alive in memory.
+- The biggest memory-side change is that inference no longer builds `self.h` at all on the main T2S path. The runtime now rebuilds `t2s_transformer` directly from the state dict and only keeps what inference actually uses.
+- This is not benchmark-only machinery. It is wired into the real inference path and mainly helps reduce steady-state RSS and peak RSS so CPU machines are less likely to stall or be reclaimed under memory pressure.
+
 ## Upstream and Credits
 
 This project is based on and uses code from:
