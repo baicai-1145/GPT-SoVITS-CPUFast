@@ -129,11 +129,23 @@ class T2SMLP:
         self.b1 = b1
         self.w2 = w2
         self.b2 = b2
+        self.w1_t = w1.transpose(0, 1).contiguous()
+        self.w2_t = w2.transpose(0, 1).contiguous()
+        self.output_dim: int = b2.shape[0]
 
     def forward(self, x):
-        x = F.relu(F.linear(x, self.w1, self.b1))
-        x = F.linear(x, self.w2, self.b2)
-        return x
+        batch_size = x.shape[0]
+        seq_len = x.shape[1]
+        rows = batch_size * seq_len
+        x2d = x.reshape(rows, x.shape[2])
+        if rows == 1:
+            x2d = F.relu(F.linear(x2d, self.w1, self.b1))
+            x2d = F.linear(x2d, self.w2, self.b2)
+        else:
+            x2d = torch.addmm(self.b1, x2d, self.w1_t)
+            x2d = F.relu(x2d)
+            x2d = torch.addmm(self.b2, x2d, self.w2_t)
+        return x2d.view(batch_size, seq_len, self.output_dim)
 
 
 @torch.jit.script
@@ -388,6 +400,9 @@ class Text2SemanticDecoder(nn.Module):
             ignore_index=self.EOS,
         )
 
+        self.rebuild_t2s_transformer()
+
+    def rebuild_t2s_transformer(self):
         blocks = []
 
         for i in range(self.num_layers):

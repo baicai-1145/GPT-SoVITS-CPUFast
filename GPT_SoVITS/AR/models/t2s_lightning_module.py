@@ -27,3 +27,8 @@ class Text2SemanticLightningModule(nn.Module):
 
     def configure_optimizers(self):
         raise RuntimeError("Training code has been removed from this inference-only build.")
+
+    def load_state_dict(self, state_dict, strict: bool = True):
+        result = super().load_state_dict(state_dict, strict=strict)
+        self.model.rebuild_t2s_transformer()
+        return result
