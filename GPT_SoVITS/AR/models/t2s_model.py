@@ -171,6 +171,8 @@ class T2SBlock:
         self.hidden_dim: int = hidden_dim
         self.qkv_w = qkv_w
         self.qkv_b = qkv_b
+        self.qkv_w_t = qkv_w.transpose(0, 1).contiguous()
+        self.qkv_out_dim: int = qkv_b.shape[0]
         self.out_w = out_w
         self.out_b = out_b
         self.norm_w1 = norm_w1
@@ -204,10 +206,17 @@ class T2SBlock:
         padding_mask: Optional[torch.Tensor] = None,
         torch_sdpa: bool = True,
     ):
-        q, k, v = F.linear(self.to_mask(x, padding_mask), self.qkv_w, self.qkv_b).chunk(3, dim=-1)
+        x_masked = self.to_mask(x, padding_mask)
+        batch_size = x_masked.shape[0]
+        q_len = x_masked.shape[1]
+        rows = batch_size * q_len
+        if rows == 1:
+            qkv = F.linear(x_masked.reshape(rows, x_masked.shape[2]), self.qkv_w, self.qkv_b)
+        else:
+            qkv = torch.addmm(self.qkv_b, x_masked.reshape(rows, x_masked.shape[2]), self.qkv_w_t)
+        qkv = qkv.view(batch_size, q_len, self.qkv_out_dim)
+        q, k, v = qkv.chunk(3, dim=-1)
 
-        batch_size = q.shape[0]
-        q_len = q.shape[1]
         kv_len = k.shape[1]
 
         q = self.to_mask(q, padding_mask)
@@ -252,14 +261,20 @@ class T2SBlock:
         attn_mask: torch.Tensor = None,
         torch_sdpa: bool = True,
     ):
-        q, k, v = F.linear(x, self.qkv_w, self.qkv_b).chunk(3, dim=-1)
+        batch_size = x.shape[0]
+        q_len = x.shape[1]
+        rows = batch_size * q_len
+        if rows == 1:
+            qkv = F.linear(x.reshape(rows, x.shape[2]), self.qkv_w, self.qkv_b)
+        else:
+            qkv = torch.addmm(self.qkv_b, x.reshape(rows, x.shape[2]), self.qkv_w_t)
+        qkv = qkv.view(batch_size, q_len, self.qkv_out_dim)
+        q, k, v = qkv.chunk(3, dim=-1)
 
         next_cache_len = cache_len + k.shape[1]
         k_cache[:, cache_len:next_cache_len] = k
         v_cache[:, cache_len:next_cache_len] = v
 
-        batch_size = q.shape[0]
-        q_len = q.shape[1]
         kv_len = next_cache_len
         active_k_cache = k_cache[:, :kv_len]
         active_v_cache = v_cache[:, :kv_len]
