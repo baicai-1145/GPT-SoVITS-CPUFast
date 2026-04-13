@@ -18,6 +18,7 @@ import os
 from typing import List, Tuple, Union
 
 import ffmpeg
+import gc
 import librosa
 import numpy as np
 import torch
@@ -693,8 +694,17 @@ class TTS:
         dict_s1 = torch.load(weights_path, map_location=self.configs.device, weights_only=False)
         config = dict_s1["config"]
         self.configs.max_sec = config["data"]["max_sec"]
-        t2s_model = Text2SemanticLightningModule(config, "****", is_train=False)
-        t2s_model.load_state_dict(dict_s1["weight"])
+        t2s_model = Text2SemanticLightningModule(
+            config,
+            "****",
+            is_train=False,
+            build_t2s_transformer=False,
+            build_h_module=False,
+        )
+        t2s_model.load_inference_only_state_dict(dict_s1["weight"])
+        del dict_s1
+        gc.collect()
+        t2s_model.model.release_inference_only_unused_modules()
         t2s_model = t2s_model.to(self.configs.device)
         t2s_model = t2s_model.eval()
         self.t2s_model = t2s_model
@@ -1224,6 +1234,7 @@ class TTS:
                     "seed": -1,                   # int. random seed for reproducibility.
                     "parallel_infer": True,       # bool. whether to use parallel inference for t2s.
                     "vits_parallel_infer": True,  # bool. whether to use parallel inference for vits; defaults to parallel_infer.
+                    "t2s_stable_batch_remap": True, # bool. use exact-safe tail-row remap for t2s batch shrink in parallel inference.
                     "repetition_penalty": 1.35,   # float. repetition penalty for T2S model.
                     "sample_steps": 32,           # int. number of sampling steps for VITS model V3.
                     "super_sampling": False,      # bool. whether to use super-sampling for audio when using VITS model V3.
@@ -1266,6 +1277,7 @@ class TTS:
         vits_parallel_infer = inputs.get("vits_parallel_infer", parallel_infer)
         t2s_disable_batch_shrink = inputs.get("t2s_disable_batch_shrink", False)
         t2s_batch_shrink_when_active_lte = inputs.get("t2s_batch_shrink_when_active_lte", 0)
+        t2s_stable_batch_remap = inputs.get("t2s_stable_batch_remap", True)
         repetition_penalty = inputs.get("repetition_penalty", 1.35)
         sample_steps = inputs.get("sample_steps", 32)
         super_sampling = inputs.get("super_sampling", False)
@@ -1563,6 +1575,7 @@ class TTS:
                         repetition_penalty=repetition_penalty,
                         disable_batch_shrink=t2s_disable_batch_shrink,
                         batch_shrink_when_active_lte=t2s_batch_shrink_when_active_lte,
+                        stable_batch_remap=t2s_stable_batch_remap,
                     )
                     t4 = time.perf_counter()
                     t_34 += t4 - t3

@@ -1,6 +1,8 @@
 # modified from https://github.com/yangdongchao/SoundStorm/blob/master/soundstorm/s1/AR/models/t2s_model.py
 # reference: https://github.com/lifeiteng/vall-e
 import math
+import os
+import subprocess
 import time
 from typing import List, Optional
 
@@ -69,6 +71,26 @@ def _compact_decode_attn_mask_full(mask: torch.Tensor, index: torch.Tensor, prom
     return compacted
 
 
+def _move_token_buffer_row(buffer: torch.Tensor, dst: int, src: int, used_length: int) -> None:
+    if dst == src:
+        return
+    if used_length > 0:
+        buffer[dst, :used_length] = buffer[src, :used_length]
+
+
+def _move_cache_buffer_row(cache: torch.Tensor, dst: int, src: int, used_length: int) -> None:
+    if dst == src:
+        return
+    if used_length > 0:
+        cache[dst, :used_length, :] = cache[src, :used_length, :]
+
+
+def _move_mask_row(mask: torch.Tensor, dst: int, src: int) -> None:
+    if dst == src:
+        return
+    mask[dst] = mask[src]
+
+
 def _get_benchmark_probe(model) -> Optional[dict]:
     probe = getattr(model, "_benchmark_probe", None)
     if isinstance(probe, dict):
@@ -84,6 +106,51 @@ def _probe_add(probe: Optional[dict], key: str, delta: float) -> None:
 def _probe_inc(probe: Optional[dict], key: str, delta: int = 1) -> None:
     if probe is not None:
         probe[key] = int(probe.get(key, 0)) + int(delta)
+
+
+def _probe_append(probe: Optional[dict], key: str, value) -> None:
+    if probe is not None:
+        bucket = probe.get(key)
+        if not isinstance(bucket, list):
+            bucket = []
+            probe[key] = bucket
+        bucket.append(value)
+
+
+def _get_process_rss_bytes() -> int:
+    try:
+        import psutil  # type: ignore
+
+        return int(psutil.Process(os.getpid()).memory_info().rss)
+    except Exception:
+        pass
+
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "rss=", "-p", str(os.getpid())],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        rss_kb = int(result.stdout.strip() or "0")
+        return rss_kb * 1024
+    except Exception:
+        return 0
+
+
+def _probe_update_rss_peak(probe: Optional[dict], decode_idx: int = -1) -> int:
+    if probe is None:
+        return 0
+    rss_bytes = _get_process_rss_bytes()
+    if rss_bytes <= 0:
+        return 0
+    if "rss_start_bytes" not in probe:
+        probe["rss_start_bytes"] = int(rss_bytes)
+    probe["rss_end_bytes"] = int(rss_bytes)
+    if rss_bytes > int(probe.get("rss_peak_bytes", 0)):
+        probe["rss_peak_bytes"] = int(rss_bytes)
+        probe["rss_peak_decode_idx"] = int(decode_idx)
+    return rss_bytes
 
 
 # @torch.jit.script ## 使用的话首次推理会非常慢，而且推理速度不稳定
@@ -125,9 +192,7 @@ def scaled_dot_product_attention(
 @torch.jit.script
 class T2SMLP:
     def __init__(self, w1, b1, w2, b2):
-        self.w1 = w1
         self.b1 = b1
-        self.w2 = w2
         self.b2 = b2
         self.w1_t = w1.transpose(0, 1).contiguous()
         self.w2_t = w2.transpose(0, 1).contiguous()
@@ -139,8 +204,8 @@ class T2SMLP:
         rows = batch_size * seq_len
         x2d = x.reshape(rows, x.shape[2])
         if rows == 1:
-            x2d = F.relu(F.linear(x2d, self.w1, self.b1))
-            x2d = F.linear(x2d, self.w2, self.b2)
+            x2d = F.relu(F.linear(x2d, self.w1_t.transpose(0, 1), self.b1))
+            x2d = F.linear(x2d, self.w2_t.transpose(0, 1), self.b2)
         else:
             x2d = torch.addmm(self.b1, x2d, self.w1_t)
             x2d = F.relu(x2d)
@@ -169,11 +234,9 @@ class T2SBlock:
         self.num_heads = num_heads
         self.mlp = mlp
         self.hidden_dim: int = hidden_dim
-        self.qkv_w = qkv_w
         self.qkv_b = qkv_b
         self.qkv_w_t = qkv_w.transpose(0, 1).contiguous()
         self.qkv_out_dim: int = qkv_b.shape[0]
-        self.out_w = out_w
         self.out_b = out_b
         self.out_w_t = out_w.transpose(0, 1).contiguous()
         self.out_out_dim: int = out_b.shape[0]
@@ -213,7 +276,7 @@ class T2SBlock:
         q_len = x_masked.shape[1]
         rows = batch_size * q_len
         if rows == 1:
-            qkv = F.linear(x_masked.reshape(rows, x_masked.shape[2]), self.qkv_w, self.qkv_b)
+            qkv = F.linear(x_masked.reshape(rows, x_masked.shape[2]), self.qkv_w_t.transpose(0, 1), self.qkv_b)
         else:
             qkv = torch.addmm(self.qkv_b, x_masked.reshape(rows, x_masked.shape[2]), self.qkv_w_t)
         qkv = qkv.view(batch_size, q_len, self.qkv_out_dim)
@@ -238,7 +301,11 @@ class T2SBlock:
         attn_masked = self.to_mask(attn, padding_mask)
         out_rows = batch_size * q_len
         if out_rows == 1:
-            attn = F.linear(attn_masked.reshape(out_rows, attn_masked.shape[2]), self.out_w, self.out_b)
+            attn = F.linear(
+                attn_masked.reshape(out_rows, attn_masked.shape[2]),
+                self.out_w_t.transpose(0, 1),
+                self.out_b,
+            )
         else:
             attn = torch.addmm(self.out_b, attn_masked.reshape(out_rows, attn_masked.shape[2]), self.out_w_t)
         attn = attn.view(batch_size, q_len, self.out_out_dim)
@@ -273,7 +340,7 @@ class T2SBlock:
         q_len = x.shape[1]
         rows = batch_size * q_len
         if rows == 1:
-            qkv = F.linear(x.reshape(rows, x.shape[2]), self.qkv_w, self.qkv_b)
+            qkv = F.linear(x.reshape(rows, x.shape[2]), self.qkv_w_t.transpose(0, 1), self.qkv_b)
         else:
             qkv = torch.addmm(self.qkv_b, x.reshape(rows, x.shape[2]), self.qkv_w_t)
         qkv = qkv.view(batch_size, q_len, self.qkv_out_dim)
@@ -299,7 +366,7 @@ class T2SBlock:
         attn = attn.transpose(1, 2).reshape(batch_size, q_len, -1)
         out_rows = batch_size * q_len
         if out_rows == 1:
-            attn = F.linear(attn.reshape(out_rows, attn.shape[2]), self.out_w, self.out_b)
+            attn = F.linear(attn.reshape(out_rows, attn.shape[2]), self.out_w_t.transpose(0, 1), self.out_b)
         else:
             attn = torch.addmm(self.out_b, attn.reshape(out_rows, attn.shape[2]), self.out_w_t)
         attn = attn.view(batch_size, q_len, self.out_out_dim)
@@ -365,7 +432,14 @@ class T2STransformer:
 
 
 class Text2SemanticDecoder(nn.Module):
-    def __init__(self, config, norm_first=False, top_k=3):
+    def __init__(
+        self,
+        config,
+        norm_first=False,
+        top_k=3,
+        build_t2s_transformer: bool = True,
+        build_h_module: bool = True,
+    ):
         super(Text2SemanticDecoder, self).__init__()
         self.model_dim = config["model"]["hidden_dim"]
         self.embedding_dim = config["model"]["embedding_dim"]
@@ -404,18 +478,21 @@ class Text2SemanticDecoder(nn.Module):
             alpha=True,
         )
 
-        self.h = TransformerEncoder(
-            TransformerEncoderLayer(
-                d_model=self.model_dim,
-                nhead=self.num_head,
-                dim_feedforward=self.model_dim * 4,
-                dropout=0.1,
-                batch_first=True,
-                norm_first=norm_first,
-            ),
-            num_layers=self.num_layers,
-            norm=LayerNorm(self.model_dim) if norm_first else None,
-        )
+        if build_h_module:
+            self.h = TransformerEncoder(
+                TransformerEncoderLayer(
+                    d_model=self.model_dim,
+                    nhead=self.num_head,
+                    dim_feedforward=self.model_dim * 4,
+                    dropout=0.1,
+                    batch_first=True,
+                    norm_first=norm_first,
+                ),
+                num_layers=self.num_layers,
+                norm=LayerNorm(self.model_dim) if norm_first else None,
+            )
+        else:
+            self.h = None
 
         self.ar_predict_layer = nn.Linear(self.model_dim, self.vocab_size, bias=False)
         self.loss_fct = nn.CrossEntropyLoss(reduction="sum")
@@ -428,9 +505,11 @@ class Text2SemanticDecoder(nn.Module):
             ignore_index=self.EOS,
         )
 
-        self.rebuild_t2s_transformer()
+        if build_t2s_transformer:
+            self.rebuild_t2s_transformer()
 
     def rebuild_t2s_transformer(self):
+        self._require_h_transformer()
         blocks = []
 
         for i in range(self.num_layers):
@@ -461,6 +540,50 @@ class Text2SemanticDecoder(nn.Module):
             blocks.append(block)
 
         self.t2s_transformer = T2STransformer(self.num_layers, blocks)
+
+    def rebuild_t2s_transformer_from_state_dict(self, state_dict: dict, prefix: str = ""):
+        runtime_dtype = self.ar_predict_layer.weight.dtype
+        runtime_device = self.ar_predict_layer.weight.device
+
+        def _tensor(name: str) -> torch.Tensor:
+            return state_dict[name].to(device=runtime_device, dtype=runtime_dtype)
+
+        blocks = []
+        for i in range(self.num_layers):
+            layer_prefix = f"{prefix}h.layers.{i}."
+            t2smlp = T2SMLP(
+                _tensor(layer_prefix + "linear1.weight"),
+                _tensor(layer_prefix + "linear1.bias"),
+                _tensor(layer_prefix + "linear2.weight"),
+                _tensor(layer_prefix + "linear2.bias"),
+            )
+            block = T2SBlock(
+                self.num_head,
+                self.model_dim,
+                t2smlp,
+                _tensor(layer_prefix + "self_attn.in_proj_weight"),
+                _tensor(layer_prefix + "self_attn.in_proj_bias"),
+                _tensor(layer_prefix + "self_attn.out_proj.weight"),
+                _tensor(layer_prefix + "self_attn.out_proj.bias"),
+                _tensor(layer_prefix + "norm1.weight"),
+                _tensor(layer_prefix + "norm1.bias"),
+                self.h.layers[i].norm1.eps if self.h is not None else 1e-5,
+                _tensor(layer_prefix + "norm2.weight"),
+                _tensor(layer_prefix + "norm2.bias"),
+                self.h.layers[i].norm2.eps if self.h is not None else 1e-5,
+            )
+            blocks.append(block)
+        self.t2s_transformer = T2STransformer(self.num_layers, blocks)
+
+    def release_inference_only_unused_modules(self):
+        # In inference runtime we only use infer_panel* paths backed by t2s_transformer.
+        self.h = None
+        self.loss_fct = None
+        self.ar_accuracy_metric = None
+
+    def _require_h_transformer(self):
+        if self.h is None:
+            raise RuntimeError("self.h has been released in inference-only runtime; use infer_panel* paths instead")
 
     def make_input_data(self, x, x_lens, y, y_lens, bert_feature):
         x = self.ar_text_embedding(x)
@@ -520,6 +643,7 @@ class Text2SemanticDecoder(nn.Module):
         x: phoneme_ids
         y: semantic_ids
         """
+        self._require_h_transformer()
 
         reject_y, reject_y_lens = make_reject_y(y, y_lens)
 
@@ -562,6 +686,7 @@ class Text2SemanticDecoder(nn.Module):
         x: phoneme_ids
         y: semantic_ids
         """
+        self._require_h_transformer()
         x = self.ar_text_embedding(x)
         x = x + self.bert_proj(bert_feature.transpose(1, 2))
         x = self.ar_text_position(x)
@@ -630,6 +755,7 @@ class Text2SemanticDecoder(nn.Module):
         early_stop_num: int = -1,
         temperature: float = 1.0,
     ):
+        self._require_h_transformer()
         x = self.ar_text_embedding(x)
         x = x + self.bert_proj(bert_feature.transpose(1, 2))
         x = self.ar_text_position(x)
@@ -719,6 +845,7 @@ class Text2SemanticDecoder(nn.Module):
         torch_sdpa = bool(kwargs.get("torch_sdpa", True))
         disable_batch_shrink = bool(kwargs.get("disable_batch_shrink", False))
         batch_shrink_when_active_lte = int(kwargs.get("batch_shrink_when_active_lte", 0))
+        stable_batch_remap = bool(kwargs.get("stable_batch_remap", False))
         x_list = []
         t_probe = time.perf_counter() if probe is not None else 0.0
         for x_item, bert_item in zip(x, bert_feature):
@@ -826,6 +953,7 @@ class Text2SemanticDecoder(nn.Module):
             dtype=torch.bool,
             device=x.device,
         )
+        _probe_update_rss_peak(probe, -1)
         decode_attn_mask_full[:, :, :, :src_len] = prompt_attn_mask[:, :, -1:, :]
         decode_attn_mask = None
         for idx in range(MAX_AR_DECODE_STEPS):
@@ -842,6 +970,7 @@ class Text2SemanticDecoder(nn.Module):
                 if probe is not None:
                     _probe_add(probe, "decode_transformer_sec", time.perf_counter() - t_probe)
                     _probe_inc(probe, "process_prompt_calls")
+                    _probe_update_rss_peak(probe, idx)
             else:
                 t_probe = time.perf_counter() if probe is not None else 0.0
                 xy_dec, k_cache, v_cache, cache_len = self.t2s_transformer.decode_next_token(
@@ -855,10 +984,12 @@ class Text2SemanticDecoder(nn.Module):
                 if probe is not None:
                     _probe_add(probe, "decode_transformer_sec", time.perf_counter() - t_probe)
                     _probe_inc(probe, "decode_next_token_calls")
+                    _probe_update_rss_peak(probe, idx)
             t_probe = time.perf_counter() if probe is not None else 0.0
             logits = self.ar_predict_layer(xy_dec[:, -1])
             if probe is not None:
                 _probe_add(probe, "logits_sec", time.perf_counter() - t_probe)
+                _probe_update_rss_peak(probe, idx)
 
             if idx < 11:  ###至少预测出10个token不然不给停止（0.4s）
                 logits = logits[:, :-1] 
@@ -867,10 +998,32 @@ class Text2SemanticDecoder(nn.Module):
             if probe is not None:
                 _probe_add(probe, "sample_history_tokens_sum", curr_y_len)
                 _probe_add(probe, "sample_batch_items_sum", y.shape[0])
+            sample_logits = logits
+            sample_y = y
+            restore_order = None
+            if stable_batch_remap and len(batch_idx_map) > 1:
+                logical_order_list = [idx_ for idx_, _ in sorted(enumerate(batch_idx_map), key=lambda item: item[1])]
+                if logical_order_list != list(range(len(batch_idx_map))):
+                    logical_order = torch.tensor(logical_order_list, device=logits.device, dtype=torch.long)
+                    sample_logits = torch.index_select(logits, dim=0, index=logical_order)
+                    sample_y = torch.index_select(y, dim=0, index=logical_order)
+                    restore_order = torch.empty_like(logical_order)
+                    restore_order[logical_order] = torch.arange(logical_order.numel(), device=logits.device)
+                    if probe is not None:
+                        _probe_inc(probe, "sample_reorder_events")
             t_probe = time.perf_counter() if probe is not None else 0.0
             samples = sample(
-                logits, y, top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty, temperature=temperature
+                sample_logits,
+                sample_y,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                temperature=temperature,
             )[0]
+            tokens = torch.argmax(sample_logits, dim=-1)
+            if restore_order is not None:
+                samples = torch.index_select(samples, dim=0, index=restore_order)
+                tokens = torch.index_select(tokens, dim=0, index=restore_order)
             if probe is not None:
                 _probe_add(probe, "sample_sec", time.perf_counter() - t_probe)
             y_buffer[:, curr_y_len : curr_y_len + 1] = samples
@@ -878,10 +1031,10 @@ class Text2SemanticDecoder(nn.Module):
 
             ####### 移除batch中已经生成完毕的序列,进一步优化计算量
             t_probe = time.perf_counter() if probe is not None else 0.0
-            tokens = torch.argmax(logits, dim=-1)
             reserved_idx_of_batch_for_y = None
             should_shrink = False
             if (self.EOS in samples[:, 0]) or (self.EOS in tokens):  ###如果生成到EOS，则停止
+                active_count_before_remove = int(active_rows.sum().item())
                 l1 = samples[:, 0] == self.EOS
                 l2 = tokens == self.EOS
                 l = active_rows.logical_and(l1.logical_or(l2))
@@ -901,6 +1054,26 @@ class Text2SemanticDecoder(nn.Module):
                         or active_count_after_remove <= batch_shrink_when_active_lte
                     )
                 )
+                if probe is not None:
+                    reserved_idx_list = reserved_idx_of_batch_for_y.tolist()
+                    prefix_compactable = reserved_idx_list == list(range(len(reserved_idx_list)))
+                    suffix_removed = removed_idx_of_batch_for_y == list(
+                        range(active_count_after_remove, active_count_before_remove)
+                    )
+                    _probe_append(
+                        probe,
+                        "shrink_events_trace",
+                        {
+                            "decode_idx": int(idx),
+                            "active_count_before_remove": active_count_before_remove,
+                            "active_count_after_remove": active_count_after_remove,
+                            "removed_idx": removed_idx_of_batch_for_y,
+                            "reserved_idx": reserved_idx_list,
+                            "should_shrink": bool(should_shrink),
+                            "prefix_compactable": bool(prefix_compactable),
+                            "suffix_removed": bool(suffix_removed),
+                        },
+                    )
 
                 if not should_shrink:
                     if removed_idx_of_batch_for_y:
@@ -909,7 +1082,8 @@ class Text2SemanticDecoder(nn.Module):
                         _probe_inc(probe, "batch_shrink_deferred_events")
                         _probe_inc(probe, "batch_shrink_deferred_items", int(len(removed_idx_of_batch_for_y)))
                 else:
-                    batch_idx_map = [batch_idx_map[i] for i in reserved_idx_of_batch_for_y.tolist()]
+                    if not stable_batch_remap:
+                        batch_idx_map = [batch_idx_map[i] for i in reserved_idx_of_batch_for_y.tolist()]
             if probe is not None:
                 _probe_add(probe, "stop_check_sec", time.perf_counter() - t_probe)
 
@@ -917,20 +1091,54 @@ class Text2SemanticDecoder(nn.Module):
             if reserved_idx_of_batch_for_y is not None and should_shrink:
                 t_probe = time.perf_counter() if probe is not None else 0.0
                 removed_count = int(len(removed_idx_of_batch_for_y))
-                y_buffer = _compact_token_buffer(y_buffer, reserved_idx_of_batch_for_y, curr_y_len)
-                decode_attn_mask_full = _compact_decode_attn_mask_full(
-                    decode_attn_mask_full, reserved_idx_of_batch_for_y, src_len
-                )
-                samples = torch.index_select(samples, dim=0, index=reserved_idx_of_batch_for_y)
-                if k_cache is not None:
-                    for i in range(len(k_cache)):
-                        k_cache[i] = _compact_cache_buffer(k_cache[i], reserved_idx_of_batch_for_y, cache_len)
-                        v_cache[i] = _compact_cache_buffer(v_cache[i], reserved_idx_of_batch_for_y, cache_len)
+                if stable_batch_remap:
+                    active_count_after_remove = int(reserved_idx_of_batch_for_y.numel())
+                    removed_set = set(removed_idx_of_batch_for_y)
+                    hole_indices = [row for row in removed_idx_of_batch_for_y if row < active_count_after_remove]
+                    donor = active_count_before_remove - 1
+                    moved_rows = 0
+                    for hole in hole_indices:
+                        while donor in removed_set:
+                            donor -= 1
+                        if donor < active_count_after_remove:
+                            break
+                        _move_token_buffer_row(y_buffer, hole, donor, curr_y_len)
+                        _move_mask_row(decode_attn_mask_full, hole, donor)
+                        samples[hole] = samples[donor]
+                        if k_cache is not None:
+                            for i in range(len(k_cache)):
+                                _move_cache_buffer_row(k_cache[i], hole, donor, cache_len)
+                                _move_cache_buffer_row(v_cache[i], hole, donor, cache_len)
+                        batch_idx_map[hole] = batch_idx_map[donor]
+                        donor -= 1
+                        moved_rows += 1
+                    y_buffer = y_buffer[:active_count_after_remove]
+                    decode_attn_mask_full = decode_attn_mask_full[:active_count_after_remove]
+                    samples = samples[:active_count_after_remove]
+                    batch_idx_map = batch_idx_map[:active_count_after_remove]
+                    if k_cache is not None:
+                        for i in range(len(k_cache)):
+                            k_cache[i] = k_cache[i][:active_count_after_remove]
+                            v_cache[i] = v_cache[i][:active_count_after_remove]
+                    if probe is not None:
+                        _probe_inc(probe, "batch_remap_events")
+                        _probe_inc(probe, "batch_remap_moved_rows", moved_rows)
+                else:
+                    y_buffer = _compact_token_buffer(y_buffer, reserved_idx_of_batch_for_y, curr_y_len)
+                    decode_attn_mask_full = _compact_decode_attn_mask_full(
+                        decode_attn_mask_full, reserved_idx_of_batch_for_y, src_len
+                    )
+                    samples = torch.index_select(samples, dim=0, index=reserved_idx_of_batch_for_y)
+                    if k_cache is not None:
+                        for i in range(len(k_cache)):
+                            k_cache[i] = _compact_cache_buffer(k_cache[i], reserved_idx_of_batch_for_y, cache_len)
+                            v_cache[i] = _compact_cache_buffer(v_cache[i], reserved_idx_of_batch_for_y, cache_len)
                 active_rows = torch.ones((y_buffer.shape[0],), dtype=torch.bool, device=active_rows.device)
                 if probe is not None:
                     _probe_add(probe, "shrink_sec", time.perf_counter() - t_probe)
                     _probe_inc(probe, "batch_shrink_events")
                     _probe_inc(probe, "batch_shrink_items", removed_count)
+                    _probe_update_rss_peak(probe, idx)
             elif reserved_idx_of_batch_for_y is not None and disable_batch_shrink and probe is not None:
                 _probe_inc(probe, "batch_shrink_skipped_events")
                 _probe_inc(probe, "batch_shrink_items", int(len(removed_idx_of_batch_for_y)))
@@ -962,6 +1170,7 @@ class Text2SemanticDecoder(nn.Module):
             ].to(dtype=y_emb.dtype, device=y_emb.device)
             if probe is not None:
                 _probe_add(probe, "next_pos_sec", time.perf_counter() - t_probe)
+                _probe_update_rss_peak(probe, idx)
 
         if None in idx_list:
             for i in range(x.shape[0]):
@@ -970,6 +1179,7 @@ class Text2SemanticDecoder(nn.Module):
 
         if probe is not None:
             _probe_add(probe, "generated_tokens_sum", max(curr_y_len - prefix_len, 0))
+            _probe_update_rss_peak(probe, idx if curr_y_len > 0 else -1)
         if ref_free:
             return y_list, [0] * x.shape[0]
         # print(idx_list)

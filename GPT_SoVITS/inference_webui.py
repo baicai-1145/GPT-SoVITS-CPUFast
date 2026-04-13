@@ -35,6 +35,7 @@ import os
 import re
 import traceback
 import warnings
+import gc
 
 import torch
 import torchaudio
@@ -390,8 +391,17 @@ def change_gpt_weights(gpt_path):
     dict_s1 = torch.load(gpt_path, map_location="cpu", weights_only=False)
     config = dict_s1["config"]
     max_sec = config["data"]["max_sec"]
-    t2s_model = Text2SemanticLightningModule(config, "****", is_train=False)
-    t2s_model.load_state_dict(dict_s1["weight"])
+    t2s_model = Text2SemanticLightningModule(
+        config,
+        "****",
+        is_train=False,
+        build_t2s_transformer=False,
+        build_h_module=False,
+    )
+    t2s_model.load_inference_only_state_dict(dict_s1["weight"])
+    del dict_s1
+    gc.collect()
+    t2s_model.model.release_inference_only_unused_modules()
     if is_half == True:
         t2s_model = t2s_model.half()
     t2s_model = t2s_model.to(device)
