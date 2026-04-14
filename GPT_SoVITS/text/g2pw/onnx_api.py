@@ -6,7 +6,7 @@ import os
 import pickle
 import warnings
 import zipfile
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import onnxruntime
@@ -289,9 +289,13 @@ class _G2PWBaseOnnxConverter:
         print(f'Warning: "{bopomofo}" cannot convert to pinyin')
         return None
 
-    def __call__(self, sentences: List[str]) -> List[List[str]]:
+    def __call__(
+        self, sentences: List[str], partial_results: Optional[List[Optional[List[Optional[str]]]]] = None
+    ) -> List[List[str]]:
         if isinstance(sentences, str):
             sentences = [sentences]
+        if partial_results is not None and len(partial_results) != len(sentences):
+            raise ValueError("partial_results must have the same length as sentences")
 
         if self.enable_opencc:
             translated_sentences = []
@@ -301,7 +305,9 @@ class _G2PWBaseOnnxConverter:
                 translated_sentences.append(translated_sent)
             sentences = translated_sentences
 
-        texts, model_query_ids, result_query_ids, sent_ids, partial_results = self._prepare_data(sentences=sentences)
+        texts, model_query_ids, result_query_ids, sent_ids, partial_results = self._prepare_data(
+            sentences=sentences, preset_partial_results=partial_results
+        )
         if len(texts) == 0:
             return partial_results
 
@@ -336,16 +342,23 @@ class _G2PWBaseOnnxConverter:
         return results
 
     def _prepare_data(
-        self, sentences: List[str]
+        self,
+        sentences: List[str],
+        preset_partial_results: Optional[List[Optional[List[Optional[str]]]]] = None,
     ) -> Tuple[List[str], List[int], List[int], List[int], List[List[str]]]:
         texts, model_query_ids, result_query_ids, sent_ids, partial_results = [], [], [], [], []
         for sent_id, sent in enumerate(sentences):
             sent_s = tranditional_to_simplified(sent)
             pypinyin_result = pinyin(sent_s, neutral_tone_with_five=True, style=Style.TONE3)
             partial_result = [None] * len(sent)
+            preset_result = None if preset_partial_results is None else preset_partial_results[sent_id]
+            if preset_result is not None and len(preset_result) != len(sent):
+                raise ValueError("preset partial_result must have the same length as the sentence")
             polyphonic_indices: List[int] = []
             for i, char in enumerate(sent):
-                if char in self.polyphonic_chars_new:
+                if preset_result is not None and preset_result[i] is not None:
+                    partial_result[i] = preset_result[i]
+                elif char in self.polyphonic_chars_new:
                     polyphonic_indices.append(i)
                 elif char in self.monophonic_chars_dict:
                     partial_result[i] = self.style_convert_func(self.monophonic_chars_dict[char])

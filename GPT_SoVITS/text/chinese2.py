@@ -1,11 +1,15 @@
 import os
 import re
+from functools import lru_cache
 
 from pypinyin import Style
+from pypinyin import pinyin
+from pypinyin.constants import PHRASES_DICT
 from pypinyin.contrib.tone_convert import to_finals_tone3, to_initials
 
 from text.symbols import punctuation
 from text.tone_sandhi import ToneSandhi
+from text.zh_normalization.char_convert import tranditional_to_simplified
 from text.zh_normalization.text_normlization import TextNormalizer
 
 text_normalizer = TextNormalizer()
@@ -29,7 +33,7 @@ is_g2pw = True  # True if is_g2pw_str.lower() == 'true' else False
 if is_g2pw:
     # print("当前使用g2pw进行拼音推理")
     from text.g2pw.onnx_api import G2PWOnnxConverter
-    from text.g2pw.pronunciation import correct_pronunciation
+    from text.g2pw.pronunciation import correct_pronunciation, get_phrase_pronunciation
 
     parent_directory = os.path.dirname(current_file_path)
     g2pw = G2PWOnnxConverter(
@@ -98,6 +102,61 @@ def _get_initials_finals(word):
         initials.append(c)
         finals.append(v)
     return initials, finals
+
+
+def _word_has_g2pw_polyphonic_char(word: str) -> bool:
+    return any(char in g2pw.polyphonic_chars_new for char in word)
+
+
+@lru_cache(maxsize=8192)
+def _get_phrase_level_pinyin_override(word: str):
+    if not is_g2pw or len(word) <= 1:
+        return None
+
+    local_override = get_phrase_pronunciation(word)
+    if local_override is not None and len(local_override) == len(word):
+        return tuple(local_override)
+
+    simplified_word = tranditional_to_simplified(word)
+    if simplified_word != word:
+        local_override = get_phrase_pronunciation(simplified_word)
+        if local_override is not None and len(local_override) == len(word):
+            return tuple(local_override)
+
+    if not _word_has_g2pw_polyphonic_char(word):
+        return None
+
+    lookup_word = word if word in PHRASES_DICT else simplified_word if simplified_word in PHRASES_DICT else None
+    if lookup_word is None:
+        return None
+
+    resolved = []
+    for item in pinyin(lookup_word, neutral_tone_with_five=True, style=Style.TONE3):
+        if not item or not item[0]:
+            return None
+        resolved.append(item[0])
+
+    if len(resolved) != len(word):
+        return None
+    return tuple(resolved)
+
+
+def _build_segment_g2pw_partial_result(seg_cut, seg: str):
+    partial_result = [None] * len(seg)
+    cursor = 0
+    has_override = False
+    for word, pos in seg_cut:
+        word_len = len(word)
+        if pos != "eng":
+            phrase_override = _get_phrase_level_pinyin_override(word)
+            if phrase_override is not None:
+                partial_result[cursor : cursor + word_len] = phrase_override
+                has_override = True
+        cursor += word_len
+
+    if cursor != len(seg) or not has_override:
+        return None
+    return partial_result
 
 
 must_erhua = {"小院儿", "胡同儿", "范儿", "老汉儿", "撒欢儿", "寻老礼儿", "妥妥儿", "媳妇儿"}
@@ -240,14 +299,23 @@ def _g2p(segments, return_phone_units: bool = False):
     g2pw_batch_cursor = 0
     char_cursor = 0
     processed_segments = [re.sub("[a-zA-Z]+", "", seg) for seg in segments]
-    if is_g2pw:
-        batch_inputs = [seg for seg in processed_segments if seg]
-        g2pw_batch_results = g2pw(batch_inputs) if batch_inputs else []
-
+    seg_cuts = []
+    g2pw_partial_results = []
     for seg in processed_segments:
-        pinyins = []
         seg_cut = psg.lcut(seg)
         seg_cut = tone_modifier.pre_merge_for_modify(seg_cut)
+        seg_cuts.append(seg_cut)
+        if is_g2pw and seg:
+            g2pw_partial_results.append(_build_segment_g2pw_partial_result(seg_cut, seg))
+        else:
+            g2pw_partial_results.append(None)
+    if is_g2pw:
+        batch_inputs = [seg for seg in processed_segments if seg]
+        batch_partial_results = [result for seg, result in zip(processed_segments, g2pw_partial_results) if seg]
+        g2pw_batch_results = g2pw(batch_inputs, partial_results=batch_partial_results) if batch_inputs else []
+
+    for seg, seg_cut in zip(processed_segments, seg_cuts):
+        pinyins = []
         if seg:
             if is_g2pw:
                 pinyins = g2pw_batch_results[g2pw_batch_cursor]
