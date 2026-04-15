@@ -14,7 +14,7 @@ from transformers import AutoModelForMaskedLM, AutoTokenizer
 from feature_extractor import cnhubert
 
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
-from module.models_onnx import SynthesizerTrn
+from module.models import SynthesizerTrn
 
 from inference_webui import get_phones_and_bert
 
@@ -346,7 +346,7 @@ class VitsModel(nn.Module):
             else:
                 self.hps["model"]["version"] = "v2"
         else:
-            if version in ["v1", "v2", "v3", "v4", "v2Pro", "v2ProPlus"]:
+            if version in ["v1", "v2", "v2Pro", "v2ProPlus"]:
                 self.hps["model"]["version"] = version
             else:
                 raise ValueError(f"Unsupported version: {version}")

@@ -70,7 +70,7 @@ print_help() {
     echo ""
     echo "Options:"
     echo "  --source   HF|HF-Mirror|ModelScope     Specify the model source (REQUIRED)"
-    echo "  --version  v1|v2|v3|v4|v2Pro|v2ProPlus|all"
+    echo "  --version  v1|v2|v2Pro|v2ProPlus|all"
     echo "                                            Specify which inference pretrained files to download (REQUIRED)"
     echo "  -h, --help                             Show this help message and exit"
     echo ""
@@ -109,12 +109,12 @@ while [[ $# -gt 0 ]]; do
         ;;
     --version)
         case "$2" in
-        v1 | v2 | v3 | v4 | v2Pro | v2ProPlus | all)
+        v1 | v2 | v2Pro | v2ProPlus | all)
             MODEL_VERSION="$2"
             ;;
         *)
             echo -e "${ERROR}Error: Invalid Version: $2"
-            echo -e "${ERROR}Choose From: [v1, v2, v3, v4, v2Pro, v2ProPlus, all]"
+            echo -e "${ERROR}Choose From: [v1, v2, v2Pro, v2ProPlus, all]"
             exit 1
             ;;
         esac
@@ -273,17 +273,6 @@ download_version_files() {
         download_repo_file_if_missing "pretrained_models/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt"
         download_repo_file_if_missing "pretrained_models/gsv-v2final-pretrained/s2G2333k.pth"
         ;;
-    v3)
-        download_repo_file_if_missing "pretrained_models/s1v3.ckpt"
-        download_repo_file_if_missing "pretrained_models/s2Gv3.pth"
-        download_repo_file_if_missing "pretrained_models/models--nvidia--bigvgan_v2_24khz_100band_256x/bigvgan_generator.pt"
-        download_repo_file_if_missing "pretrained_models/models--nvidia--bigvgan_v2_24khz_100band_256x/config.json"
-        ;;
-    v4)
-        download_repo_file_if_missing "pretrained_models/s1v3.ckpt"
-        download_repo_file_if_missing "pretrained_models/gsv-v4-pretrained/s2Gv4.pth"
-        download_repo_file_if_missing "pretrained_models/gsv-v4-pretrained/vocoder.pth"
-        ;;
     v2Pro)
         download_repo_file_if_missing "pretrained_models/s1v3.ckpt"
         download_repo_file_if_missing "pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt"
@@ -297,8 +286,6 @@ download_version_files() {
     all)
         download_version_files v1
         download_version_files v2
-        download_version_files v3
-        download_version_files v4
         download_version_files v2Pro
         download_version_files v2ProPlus
         ;;

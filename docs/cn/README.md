@@ -8,7 +8,7 @@
 
 - 仅保留推理能力的 GPT-SoVITS 分支
 - 设计目标是 CPU 推理，不再围绕 GPU 训练流程组织仓库
-- 当前实际重点是 S2 `v2Pro` / `v2ProPlus` 路线，同时保留 `v1`、`v2`、`v3`、`v4`、`v2Pro`、`v2ProPlus` 的按版本推理权重下载
+- 当前实际重点是 S2 `v2Pro` / `v2ProPlus` 路线，同时保留 `v1`、`v2`、`v2Pro`、`v2ProPlus` 的按版本推理权重下载
 
 ## 已删除内容
 
@@ -54,8 +54,6 @@ Windows PowerShell：
 
 - `v1`
 - `v2`
-- `v3`
-- `v4`
 - `v2Pro`
 - `v2ProPlus`
 - `all`
@@ -169,8 +167,6 @@ python GPT_SoVITS/inference_webui_fast.py
 - [contentvec](https://github.com/auspicious3000/contentvec/)
 - [hifi-gan](https://github.com/jik876/hifi-gan)
 - [fish-speech](https://github.com/fishaudio/fish-speech/blob/main/tools/llama/generate.py#L41)
-- [f5-TTS](https://github.com/SWivid/F5-TTS/blob/main/src/f5_tts/model/backbones/dit.py)
-- [shortcut flow matching](https://github.com/kvfrans/shortcut-models/blob/main/targets_shortcut.py)
 
 ### 主模型 / 训练 / 声码器相关
 
@@ -179,7 +175,6 @@ python GPT_SoVITS/inference_webui_fast.py
 - [GPT-SoVITS-beta](https://github.com/lj1995/GPT-SoVITS/tree/gsv-v2beta)
 - [Chinese Speech Pretrain](https://github.com/TencentGameMate/chinese_speech_pretrain)
 - [Chinese-Roberta-WWM-Ext-Large](https://huggingface.co/hfl/chinese-roberta-wwm-ext-large)
-- [BigVGAN](https://github.com/NVIDIA/BigVGAN)
 - [eresnetv2](https://modelscope.cn/models/iic/speech_eres2netv2w24s4ep4_sv_zh-cn_16k-common)
 
 ### 推理用文本前端

@@ -40,8 +40,6 @@ POST:
     "parallel_infer": True,       # bool. whether to use parallel inference for t2s.
     "vits_parallel_infer": True,  # bool. whether to use parallel inference for vits; defaults to parallel_infer.
     "repetition_penalty": 1.35,   # float. repetition penalty for T2S model.
-    "sample_steps": 32,           # int. number of sampling steps for VITS model V3.
-    "super_sampling": False,      # bool. whether to use super-sampling for audio when using VITS model V3.
     "streaming_mode": False,      # bool or int. return audio chunk by chunk.T he available options are: 0,1,2,3 or True/False (0/False: Disabled | 1/True: Best Quality, Slowest response speed (old version streaming_mode) | 2: Medium Quality, Slow response speed | 3: Lower Quality, Faster response speed )
     "overlap_length": 2,          # int. overlap length of semantic tokens for streaming mode.
     "min_chunk_length": 16,       # int. The minimum chunk length of semantic tokens for streaming mode. (affects audio chunk size)
@@ -174,8 +172,6 @@ class TTS_Request(BaseModel):
     parallel_infer: bool = True
     vits_parallel_infer: bool = True
     repetition_penalty: float = 1.35
-    sample_steps: int = 32
-    super_sampling: bool = False
     overlap_length: int = 2
     min_chunk_length: int = 16
 
@@ -370,8 +366,6 @@ async def tts_handle(req: dict):
                 "parallel_infer": True,       # bool. whether to use parallel inference for t2s.
                 "vits_parallel_infer": True,  # bool. whether to use parallel inference for vits; defaults to parallel_infer.
                 "repetition_penalty": 1.35,   # float. repetition penalty for T2S model.
-                "sample_steps": 32,           # int. number of sampling steps for VITS model V3.
-                "super_sampling": False,      # bool. whether to use super-sampling for audio when using VITS model V3.
                 "streaming_mode": False,      # bool or int. return audio chunk by chunk.T he available options are: 0,1,2,3 or True/False (0/False: Disabled | 1/True: Best Quality, Slowest response speed (old version streaming_mode) | 2: Medium Quality, Slow response speed | 3: Lower Quality, Faster response speed )
                 "overlap_length": 2,          # int. overlap length of semantic tokens for streaming mode.
                 "min_chunk_length": 16,       # int. The minimum chunk length of semantic tokens for streaming mode. (affects audio chunk size)
@@ -477,8 +471,6 @@ async def tts_get_endpoint(
     parallel_infer: bool = True,
     vits_parallel_infer: bool = True,
     repetition_penalty: float = 1.35,
-    sample_steps: int = 32,
-    super_sampling: bool = False,
     streaming_mode: Union[bool, int] = False,
     overlap_length: int = 2,
     min_chunk_length: int = 16,
@@ -505,8 +497,6 @@ async def tts_get_endpoint(
         "parallel_infer": parallel_infer,
         "vits_parallel_infer": vits_parallel_infer,
         "repetition_penalty": float(repetition_penalty),
-        "sample_steps": int(sample_steps),
-        "super_sampling": super_sampling,
         "overlap_length": int(overlap_length),
         "min_chunk_length": int(min_chunk_length),
     }

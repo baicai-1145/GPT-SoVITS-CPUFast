@@ -1,6 +1,6 @@
 Param (
     [Parameter(Mandatory=$true)][ValidateSet("HF", "HF-Mirror", "ModelScope")][string]$Source,
-    [Parameter(Mandatory=$true)][ValidateSet("v1", "v2", "v3", "v4", "v2Pro", "v2ProPlus", "all")][string]$Version
+    [Parameter(Mandatory=$true)][ValidateSet("v1", "v2", "v2Pro", "v2ProPlus", "all")][string]$Version
 )
 
 $global:ErrorActionPreference = 'Stop'
@@ -184,17 +184,6 @@ function Download-VersionFiles {
             Download-RepoFileIfMissing "pretrained_models/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt"
             Download-RepoFileIfMissing "pretrained_models/gsv-v2final-pretrained/s2G2333k.pth"
         }
-        "v3" {
-            Download-RepoFileIfMissing "pretrained_models/s1v3.ckpt"
-            Download-RepoFileIfMissing "pretrained_models/s2Gv3.pth"
-            Download-RepoFileIfMissing "pretrained_models/models--nvidia--bigvgan_v2_24khz_100band_256x/bigvgan_generator.pt"
-            Download-RepoFileIfMissing "pretrained_models/models--nvidia--bigvgan_v2_24khz_100band_256x/config.json"
-        }
-        "v4" {
-            Download-RepoFileIfMissing "pretrained_models/s1v3.ckpt"
-            Download-RepoFileIfMissing "pretrained_models/gsv-v4-pretrained/s2Gv4.pth"
-            Download-RepoFileIfMissing "pretrained_models/gsv-v4-pretrained/vocoder.pth"
-        }
         "v2Pro" {
             Download-RepoFileIfMissing "pretrained_models/s1v3.ckpt"
             Download-RepoFileIfMissing "pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt"
@@ -208,8 +197,6 @@ function Download-VersionFiles {
         "all" {
             Download-VersionFiles "v1"
             Download-VersionFiles "v2"
-            Download-VersionFiles "v3"
-            Download-VersionFiles "v4"
             Download-VersionFiles "v2Pro"
             Download-VersionFiles "v2ProPlus"
         }

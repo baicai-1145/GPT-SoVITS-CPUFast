@@ -119,12 +119,6 @@ cut_method = {
 from config import change_choices, get_weights_names, name2gpt_path, name2sovits_path
 
 SoVITS_names, GPT_names = get_weights_names()
-from config import pretrained_sovits_name
-
-path_sovits_v3 = pretrained_sovits_name["v3"]
-path_sovits_v4 = pretrained_sovits_name["v4"]
-is_exist_s2gv3 = os.path.exists(path_sovits_v3)
-is_exist_s2gv4 = os.path.exists(path_sovits_v4)
 
 tts_config = TTS_Config("GPT_SoVITS/configs/tts_infer.yaml")
 tts_config.device = device
@@ -172,8 +166,6 @@ def inference(
     parallel_infer,
     vits_parallel_infer,
     repetition_penalty,
-    sample_steps,
-    super_sampling,
 ):
     seed = -1 if keep_random else seed
     actual_seed = seed if seed not in [-1, "", None] else random.randint(0, 2**32 - 1)
@@ -197,8 +189,6 @@ def inference(
         "parallel_infer": parallel_infer,
         "vits_parallel_infer": vits_parallel_infer,
         "repetition_penalty": repetition_penalty,
-        "sample_steps": int(sample_steps),
-        "super_sampling": super_sampling,
     }
     try:
         for item in tts_pipeline.run(inputs):
@@ -233,21 +223,12 @@ with open("./weight.json", "r", encoding="utf-8") as file:
 
 from process_ckpt import get_sovits_version_from_path_fast
 
-v3v4set = {"v3", "v4"}
-
 
 def change_sovits_weights(sovits_path, prompt_language=None, text_language=None):
     if "！" in sovits_path or "!" in sovits_path:
         sovits_path = name2sovits_path[sovits_path]
-    global version, model_version, dict_language, if_lora_v3
-    version, model_version, if_lora_v3 = get_sovits_version_from_path_fast(sovits_path)
-    # print(sovits_path,version, model_version, if_lora_v3)
-    is_exist = is_exist_s2gv3 if model_version == "v3" else is_exist_s2gv4
-    path_sovits = path_sovits_v3 if model_version == "v3" else path_sovits_v4
-    if if_lora_v3 == True and is_exist == False:
-        info = path_sovits + "SoVITS %s" % model_version + i18n("底模缺失，无法加载相应 LoRA 权重")
-        gr.Warning(info)
-        raise FileExistsError(info)
+    global version, model_version, dict_language
+    version, model_version, _ = get_sovits_version_from_path_fast(sovits_path)
     dict_language = dict_language_v1 if version == "v1" else dict_language_v2
     if prompt_language is not None and text_language is not None:
         if prompt_language in list(dict_language.keys()):
@@ -263,12 +244,6 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
         else:
             text_update = {"__type__": "update", "value": ""}
             text_language_update = {"__type__": "update", "value": i18n("中文")}
-        if model_version in v3v4set:
-            visible_sample_steps = True
-            visible_inp_refs = False
-        else:
-            visible_sample_steps = False
-            visible_inp_refs = True
         yield (
             {"__type__": "update", "choices": list(dict_language.keys())},
             {"__type__": "update", "choices": list(dict_language.keys())},
@@ -276,9 +251,8 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
             prompt_language_update,
             text_update,
             text_language_update,
-            {"__type__": "update", "interactive": visible_sample_steps, "value": 32},
-            {"__type__": "update", "visible": visible_inp_refs},
-            {"__type__": "update", "interactive": True if model_version not in v3v4set else False},
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "interactive": True},
             {"__type__": "update", "value": i18n("模型加载中，请等待"), "interactive": False},
         )
 
@@ -290,9 +264,8 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
         prompt_language_update,
         text_update,
         text_language_update,
-        {"__type__": "update", "interactive": visible_sample_steps, "value": 32},
-        {"__type__": "update", "visible": visible_inp_refs},
-        {"__type__": "update", "interactive": True if model_version not in v3v4set else False},
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "interactive": True},
         {"__type__": "update", "value": i18n("合成语音"), "interactive": True},
     )
     with open("./weight.json") as f:
@@ -345,7 +318,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 inp_refs = gr.File(
                     label=i18n("辅参考音频(可选多个，或不选)"),
                     file_count="multiple",
-                    visible=True if model_version != "v3" else False,
+                    visible=True,
                 )
             prompt_text = gr.Textbox(label=i18n("主参考音频的文本"), value="", lines=2)
             with gr.Row():
@@ -356,7 +329,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                     ref_text_free = gr.Checkbox(
                         label=i18n("开启无参考文本模式。不填参考文本亦相当于开启。"),
                         value=False,
-                        interactive=True if model_version != "v3" else False,
+                        interactive=True,
                         show_label=True,
                     )
                     gr.Markdown(
@@ -379,9 +352,6 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 with gr.Row():
                     batch_size = gr.Slider(
                         minimum=1, maximum=200, step=1, label=i18n("batch_size"), value=20, interactive=True
-                    )
-                    sample_steps = gr.Radio(
-                        label=i18n("采样步数(仅对V3/4生效)"), value=32, choices=[4, 8, 16, 32, 64, 128], visible=True
                     )
                 with gr.Row():
                     fragment_interval = gr.Slider(
@@ -416,9 +386,6 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         value=i18n("凑四句一切"),
                         interactive=True,
                         scale=1,
-                    )
-                    super_sampling = gr.Checkbox(
-                        label=i18n("音频超采样(仅对V3生效))"), value=False, interactive=True, show_label=True
                     )
 
                 with gr.Row():
@@ -468,8 +435,6 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 parallel_infer,
                 vits_parallel_infer,
                 repetition_penalty,
-                sample_steps,
-                super_sampling,
             ],
             [output, seed],
         )
@@ -484,7 +449,6 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 prompt_language,
                 text,
                 text_language,
-                sample_steps,
                 inp_refs,
                 ref_text_free,
                 inference_button,
