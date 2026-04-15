@@ -195,9 +195,13 @@ cython_debug/
 .pypirc
 .playwright-mcp/page-2026-04-09T19-13-09-115Z.yml
 GPT_SoVITS/text/ja_userdic
+GPT_SoVITS/text/g2pw/phrase_overrides_bundle.pickle
 *.wav
 *.lab
 AGENTS.md
 benchmarks
 *.pkl
+!GPT_SoVITS/text/g2pw/phrase_overrides.pkl
+!GPT_SoVITS/text/g2pw/phrase_overrides_zdic_strict.pkl
+!GPT_SoVITS/text/g2pw/phrase_overrides_hwxnet_idiom.pkl
 OPTIMIZATION_WORKLOG.md
