@@ -85,6 +85,60 @@ python GPT_SoVITS/inference_webui_fast.py
 - `install.sh` 和 `install.ps1` 现在只安装 CPU 版依赖，并按版本下载推理资源，不再整包下载全部预训练文件。
 - `NLTK` 与 `OpenJTalk` 字典默认仍会下载。
 
+## INT8 量化（降低内存）
+
+本分支提供 G2PW、BERT-large、cnhubert 三个最大共享模型的 W8A8 INT8 量化版本。安装时加 `--int8` 可减少约 3 GB 内存。
+
+### 安装
+
+```bash
+# INT8 模式（推荐内存受限环境使用）
+bash install.sh --source ModelScope --version v2ProPlus --int8
+```
+
+### 各语种内存占用
+
+INT8 模型采用懒加载——只有对应语种首次推理时才会加载到内存。
+
+| 场景 | 启动后 | 首次推理峰值 | 说明 |
+|---|---|---|---|
+| **启动（未推理）** | ~2.2 GB | — | T2S + SoVITS + cnhubert + 框架 |
+| **英文 / 日文 / 韩文** | ~2.4 GB | ~2.5 GB | 不需要 BERT 和 G2PW |
+| **中文** | ~2.7 GB | ~3.5 GB | 首次中文请求时懒加载 BERT + G2PW |
+| **多语种（auto）** | ~2.9 GB | ~3.7 GB | 首次使用时加载 LangSegmenter（fasttext 125MB） |
+
+### 量化了什么
+
+| 模型 | 原始大小 | INT8 | 精度 | 用途 |
+|---|---|---|---|---|
+| G2PW（BERT-base + 分类头） | 608 MB | 153 MB | 99.86% 准确率 | 中文多音字消歧 |
+| BERT-large（22 层） | 1242 MB | 290 MB | cosine 0.983 | 中文文本特征 |
+| cnhubert | 360 MB | 91 MB | cosine 0.985 | 音频特征提取 |
+| **合计** | **2210 MB** | **534 MB** | | |
+
+### 没有量化的
+
+T2S 和 SoVITS **不做量化**，原因：
+- 每个用户微调的语音模型权重不同
+- T2S 自回归推理对量化误差累积敏感
+- 保持 FP32（合计 ~670 MB）
+
+### FP32 与 INT8 对比
+
+| | FP32 | INT8 | 节省 |
+|---|---|---|---|
+| 启动内存 | ~5.2 GB | ~2.2 GB | **~3 GB (57%)** |
+| 模型文件 | ~2.2 GB | ~534 MB | **~1.7 GB (75%)** |
+| `transformers` 依赖 | 启动时必须加载 | 启动时不需要 | **~238 MB** |
+
+### 技术细节
+
+- 三个模型均使用手写 PyTorch forward（运行时不依赖 HuggingFace transformers）
+- BERT-large 从 24 层裁剪到 22 层（TTS 不使用最后 2 层，无损）
+- 量化使用 PyTorch Eager mode W8A8，敏感层保持 FP32/W8A32
+- 校准数据：5285 条中文维基百科句子（G2PW）、560 条多语种音频（cnhubert）
+- INT8 模型运行时自动检测——只要 `*_int8.pth` 文件存在就自动使用
+
 ## 速度摘要
 
 在不改变各语种错误率、韵律、音色和音质的前提下，这个 CPU 分支目前已经做到：

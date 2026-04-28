@@ -87,6 +87,60 @@ python GPT_SoVITS/inference_webui_fast.py
 - `install.sh` and `install.ps1` are now CPU-only installers and download inference assets by version instead of the full pretrained bundle.
 - `NLTK` and `OpenJTalk` dictionary downloads remain enabled by default.
 
+## INT8 Quantization (Memory Reduction)
+
+This fork provides W8A8 INT8 quantized versions of the three largest shared models: G2PW, BERT-large, and cnhubert. Using `--int8` during installation reduces total memory by approximately 3 GB.
+
+### Installation
+
+```bash
+# INT8 mode (recommended for memory-constrained environments)
+bash install.sh --source ModelScope --version v2ProPlus --int8
+```
+
+### Memory Usage by Language
+
+INT8 models are lazy-loaded — they are only loaded into memory when the corresponding language is first used.
+
+| Scenario | Startup | First Inference Peak | Notes |
+|---|---|---|---|
+| **Startup (no inference)** | ~2.2 GB | — | T2S + SoVITS + cnhubert + framework |
+| **English / Japanese / Korean** | ~2.4 GB | ~2.5 GB | No BERT or G2PW needed |
+| **Chinese** | ~2.7 GB | ~3.5 GB | BERT + G2PW lazy-loaded on first Chinese request |
+| **Multi-language (auto)** | ~2.9 GB | ~3.7 GB | LangSegmenter (fasttext 125MB) loaded on first use |
+
+### What Gets Quantized
+
+| Model | Original | INT8 | Precision | Purpose |
+|---|---|---|---|---|
+| G2PW (BERT-base + classifier) | 608 MB | 153 MB | 99.86% accuracy | Chinese polyphone disambiguation |
+| BERT-large (22 layers) | 1242 MB | 290 MB | cosine 0.983 | Chinese text features for T2S |
+| cnhubert | 360 MB | 91 MB | cosine 0.985 | Audio feature extraction |
+| **Total** | **2210 MB** | **534 MB** | | |
+
+### What Is NOT Quantized
+
+T2S and SoVITS models are **not** quantized because:
+- They differ per user-trained voice model
+- Autoregressive T2S is sensitive to quantization error accumulation
+- They remain in FP32 (~670 MB combined)
+
+### Comparison: FP32 vs INT8
+
+| | FP32 | INT8 | Saved |
+|---|---|---|---|
+| Startup memory | ~5.2 GB | ~2.2 GB | **~3 GB (57%)** |
+| Model files | ~2.2 GB | ~534 MB | **~1.7 GB (75%)** |
+| `transformers` dependency | Required | Not required at startup | **~238 MB** |
+
+### Technical Details
+
+- All three models use hand-written PyTorch forward passes (no HuggingFace dependency at runtime)
+- BERT-large is pruned from 24 to 22 layers (last 2 layers unused by TTS)
+- Quantization uses PyTorch Eager mode W8A8 with sensitive layers kept in FP32/W8A32
+- Calibration data: 5285 Chinese Wikipedia sentences (G2PW), 560 multilingual audio clips (cnhubert)
+- INT8 models are auto-detected at runtime — if `*_int8.pth` files exist, they are used automatically
+
 ## Speed Summary
 
 Without changing recognition behavior, prosody, speaker identity, or audio quality, this CPU fork currently delivers:
