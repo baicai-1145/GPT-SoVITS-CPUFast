@@ -5,14 +5,13 @@ librosa==0.10.2
 numba
 gradio<5
 ffmpeg-python
-onnxruntime
 tqdm
 cn2an
 pypinyin
 pyopenjtalk>=0.4.1
 g2p_en
 torchaudio
-transformers>=4.43,<=4.50
+tokenizers
 peft<0.18.0
 chardet
 PyYAML
@@ -29,6 +28,5 @@ opencc
 python_mecab_ko; sys_platform != 'win32'
 fastapi[standard]>=0.115.2
 starlette<1.0
-torchmetrics<=1.5
 pydantic<=2.10.6
 soundfile

@@ -60,6 +60,7 @@ run_wget_quiet() {
 
 WORKFLOW=${WORKFLOW:-"false"}
 MODEL_VERSION=""
+USE_INT8=false
 
 USE_HF=false
 USE_HF_MIRROR=false
@@ -72,11 +73,13 @@ print_help() {
     echo "  --source   HF|HF-Mirror|ModelScope     Specify the model source (REQUIRED)"
     echo "  --version  v1|v2|v2Pro|v2ProPlus|all"
     echo "                                            Specify which inference pretrained files to download (REQUIRED)"
+    echo "  --int8                                  Download INT8 quantized models (g2pw, bert, cnhubert)"
+    echo "                                            Reduces memory ~3GB, requires ~534MB instead of ~2.2GB"
     echo "  -h, --help                             Show this help message and exit"
     echo ""
     echo "Examples:"
     echo "  bash install.sh --source HF --version v2Pro"
-    echo "  bash install.sh --source ModelScope --version all"
+    echo "  bash install.sh --source ModelScope --version v2ProPlus --int8"
 }
 
 # Show help if no arguments provided
@@ -119,6 +122,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         esac
         shift 2
+        ;;
+    --int8)
+        USE_INT8=true
+        shift
         ;;
     -h | --help)
         print_help
@@ -217,19 +224,28 @@ echo -e "${SUCCESS}unzip Installed"
 if [ "$USE_HF" = "true" ]; then
     echo -e "${INFO}Download Model From HuggingFace"
     REPO_FILE_URL_PREFIX="https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main"
-    G2PW_URL="https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/G2PWModel.zip"
+    G2PW_URL="https://huggingface.co/baicai1145/g2pw/resolve/main/g2pw.pth"
+    G2PW_INT8_URL="https://huggingface.co/baicai1145/g2pw-int8/resolve/main/g2pw_int8.pth"
+    BERT_INT8_URL="https://huggingface.co/baicai1145/chinese-roberta-wwm-ext-large-22L-int8/resolve/main/bert_large_int8.pth"
+    CNHUBERT_INT8_URL="https://huggingface.co/baicai1145/chinese-hubert-base-int8/resolve/main/cnhubert_int8.pth"
     NLTK_URL="https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/nltk_data.zip"
     PYOPENJTALK_URL="https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/open_jtalk_dic_utf_8-1.11.tar.gz"
 elif [ "$USE_HF_MIRROR" = "true" ]; then
     echo -e "${INFO}Download Model From HuggingFace-Mirror"
     REPO_FILE_URL_PREFIX="https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main"
-    G2PW_URL="https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/G2PWModel.zip"
+    G2PW_URL="https://hf-mirror.com/baicai1145/g2pw/resolve/main/g2pw.pth"
+    G2PW_INT8_URL="https://hf-mirror.com/baicai1145/g2pw-int8/resolve/main/g2pw_int8.pth"
+    BERT_INT8_URL="https://hf-mirror.com/baicai1145/chinese-roberta-wwm-ext-large-22L-int8/resolve/main/bert_large_int8.pth"
+    CNHUBERT_INT8_URL="https://hf-mirror.com/baicai1145/chinese-hubert-base-int8/resolve/main/cnhubert_int8.pth"
     NLTK_URL="https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/nltk_data.zip"
     PYOPENJTALK_URL="https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/open_jtalk_dic_utf_8-1.11.tar.gz"
 elif [ "$USE_MODELSCOPE" = "true" ]; then
     echo -e "${INFO}Download Model From ModelScope"
     REPO_FILE_URL_PREFIX="https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master"
-    G2PW_URL="https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/G2PWModel.zip"
+    G2PW_URL="https://www.modelscope.cn/models/baicai1145/g2pw/resolve/master/g2pw.pth"
+    G2PW_INT8_URL="https://www.modelscope.cn/models/baicai1145/g2pw-int8/resolve/master/g2pw_int8.pth"
+    BERT_INT8_URL="https://www.modelscope.cn/models/baicai1145/chinese-roberta-wwm-ext-large-22L-int8/resolve/master/bert_large_int8.pth"
+    CNHUBERT_INT8_URL="https://www.modelscope.cn/models/baicai1145/chinese-hubert-base-int8/resolve/master/cnhubert_int8.pth"
     NLTK_URL="https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/nltk_data.zip"
     PYOPENJTALK_URL="https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/open_jtalk_dic_utf_8-1.11.tar.gz"
 fi
@@ -250,14 +266,46 @@ download_repo_file_if_missing() {
     echo -e "${SUCCESS}Downloaded ${relative_path}"
 }
 
-download_shared_inference_files() {
-    download_repo_file_if_missing "pretrained_models/chinese-hubert-base/config.json"
-    download_repo_file_if_missing "pretrained_models/chinese-hubert-base/preprocessor_config.json"
-    download_repo_file_if_missing "pretrained_models/chinese-hubert-base/pytorch_model.bin"
+download_file_if_missing() {
+    local local_path="$1"
+    local remote_url="$2"
 
-    download_repo_file_if_missing "pretrained_models/chinese-roberta-wwm-ext-large/config.json"
-    download_repo_file_if_missing "pretrained_models/chinese-roberta-wwm-ext-large/pytorch_model.bin"
-    download_repo_file_if_missing "pretrained_models/chinese-roberta-wwm-ext-large/tokenizer.json"
+    if [ -f "$local_path" ]; then
+        echo -e "${INFO}File Exists: ${local_path}"
+        return
+    fi
+
+    mkdir -p "$(dirname "$local_path")"
+    echo -e "${INFO}Downloading $(basename "$local_path")..."
+    run_wget_quiet "$remote_url" -O "$local_path"
+    echo -e "${SUCCESS}Downloaded $(basename "$local_path")"
+}
+
+download_shared_inference_files() {
+    if [ "$USE_INT8" = "true" ]; then
+        # INT8 模式: 下载量化模型, 不需要 FP32 的 bert/cnhubert 权重
+        echo -e "${INFO}INT8 mode: Downloading quantized models..."
+
+        # cnhubert: 只需要 config (tokenizer 不需要), INT8 权重
+        download_repo_file_if_missing "pretrained_models/chinese-hubert-base/config.json"
+        download_repo_file_if_missing "pretrained_models/chinese-hubert-base/preprocessor_config.json"
+        download_file_if_missing "GPT_SoVITS/pretrained_models/chinese-hubert-base/cnhubert_int8.pth" "$CNHUBERT_INT8_URL"
+
+        # bert: 只需要 tokenizer.json 和 config, INT8 权重
+        download_repo_file_if_missing "pretrained_models/chinese-roberta-wwm-ext-large/config.json"
+        download_repo_file_if_missing "pretrained_models/chinese-roberta-wwm-ext-large/tokenizer.json"
+        mkdir -p "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large-22L"
+        download_file_if_missing "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large-22L/bert_large_int8.pth" "$BERT_INT8_URL"
+    else
+        # FP32 模式: 下载完整模型
+        download_repo_file_if_missing "pretrained_models/chinese-hubert-base/config.json"
+        download_repo_file_if_missing "pretrained_models/chinese-hubert-base/preprocessor_config.json"
+        download_repo_file_if_missing "pretrained_models/chinese-hubert-base/pytorch_model.bin"
+
+        download_repo_file_if_missing "pretrained_models/chinese-roberta-wwm-ext-large/config.json"
+        download_repo_file_if_missing "pretrained_models/chinese-roberta-wwm-ext-large/pytorch_model.bin"
+        download_repo_file_if_missing "pretrained_models/chinese-roberta-wwm-ext-large/tokenizer.json"
+    fi
 
     download_repo_file_if_missing "pretrained_models/fast_langdetect/lid.176.bin"
     download_repo_file_if_missing "pretrained_models/fast_langdetect/lid.176.ftz"
@@ -302,17 +350,46 @@ echo -e "${INFO}Downloading Version-Specific Inference Weights For ${MODEL_VERSI
 download_version_files "$MODEL_VERSION"
 echo -e "${SUCCESS}Inference Pretrained Files Downloaded"
 
-if [ ! -d "GPT_SoVITS/text/G2PWModel" ]; then
-    echo -e "${INFO}Downloading G2PWModel.."
-    rm -rf G2PWModel.zip
-    run_wget_quiet "$G2PW_URL"
+# G2PW: 下载 torch 权重 (从 baicai1145/g2pw)
+if [ "$USE_INT8" = "true" ]; then
+    # INT8 模式: 下载 g2pw INT8 量化权重
+    if [ ! -f "GPT_SoVITS/text/G2PWModel/g2pW_int8.pth" ] && [ ! -f "GPT_SoVITS/text/G2PWModel/g2pw_int8.pth" ]; then
+        echo -e "${INFO}Downloading G2PW INT8 Model..."
+        mkdir -p GPT_SoVITS/text/G2PWModel
+        download_file_if_missing "GPT_SoVITS/text/G2PWModel/g2pw_int8.pth" "$G2PW_INT8_URL"
+        echo -e "${SUCCESS}G2PW INT8 Model Downloaded"
+    else
+        echo -e "${INFO}G2PW INT8 Model Exists"
+    fi
+fi
 
+# G2PW torch 权重 (FP32, 量化和推理都需要作为 fallback)
+if [ ! -f "GPT_SoVITS/text/G2PWModel/g2pw.pth" ] && [ ! -f "GPT_SoVITS/text/G2PWModel/g2pW.pth" ]; then
+    echo -e "${INFO}Downloading G2PW PyTorch Model..."
+    mkdir -p GPT_SoVITS/text/G2PWModel
+    download_file_if_missing "GPT_SoVITS/text/G2PWModel/g2pw.pth" "$G2PW_URL"
+    echo -e "${SUCCESS}G2PW PyTorch Model Downloaded"
+else
+    echo -e "${INFO}G2PW Model Exists"
+fi
+
+# G2PW 静态资源 (POLYPHONIC_CHARS.txt 等)
+if [ ! -f "GPT_SoVITS/text/G2PWModel/POLYPHONIC_CHARS.txt" ]; then
+    echo -e "${INFO}Downloading G2PW Static Assets..."
+    if [ "$USE_HF" = "true" ]; then
+        G2PW_ASSETS_URL="https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/G2PWModel.zip"
+    elif [ "$USE_HF_MIRROR" = "true" ]; then
+        G2PW_ASSETS_URL="https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/G2PWModel.zip"
+    elif [ "$USE_MODELSCOPE" = "true" ]; then
+        G2PW_ASSETS_URL="https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/G2PWModel.zip"
+    fi
+    rm -rf G2PWModel.zip
+    run_wget_quiet "$G2PW_ASSETS_URL"
     unzip -q -o G2PWModel.zip -d GPT_SoVITS/text
     rm -rf G2PWModel.zip
-    echo -e "${SUCCESS}G2PWModel Downloaded"
+    echo -e "${SUCCESS}G2PW Static Assets Downloaded"
 else
-    echo -e "${INFO}G2PWModel Exists"
-    echo -e "${INFO}Skip Downloading G2PWModel"
+    echo -e "${INFO}G2PW Static Assets Exist"
 fi
 
 if [ "$WORKFLOW" = false ]; then
@@ -346,4 +423,9 @@ tar -xzf open_jtalk_dic_utf_8-1.11.tar.gz -C "$PYOPENJTALK_PREFIX"
 rm -rf open_jtalk_dic_utf_8-1.11.tar.gz
 echo -e "${SUCCESS}Open JTalk Dic Downloaded"
 
-echo -e "${SUCCESS}Installation Completed"
+if [ "$USE_INT8" = "true" ]; then
+    echo -e "${SUCCESS}Installation Completed (INT8 quantized mode)"
+    echo -e "${INFO}INT8 models will be auto-detected at runtime. Memory savings: ~3GB"
+else
+    echo -e "${SUCCESS}Installation Completed"
+fi
