@@ -97,7 +97,6 @@ import gradio as gr
 import librosa
 import numpy as np
 from feature_extractor import cnhubert
-from transformers import AutoModelForMaskedLM, AutoTokenizer
 from tools.audio_utils import load_audio_tensor
 
 cnhubert.cnhubert_base_path = cnhubert_base_path
@@ -163,21 +162,49 @@ dict_language_v2 = {
 }
 dict_language = dict_language_v1 if version == "v1" else dict_language_v2
 
-tokenizer = AutoTokenizer.from_pretrained(bert_path)
-bert_model = AutoModelForMaskedLM.from_pretrained(bert_path)
-if is_half == True:
-    bert_model = bert_model.half().to(device)
-else:
-    bert_model = bert_model.to(device)
+tokenizer = None
+bert_model = None
+_bert_is_int8 = False
+_bert_loaded = False
+
+def _ensure_bert_loaded():
+    global tokenizer, bert_model, _bert_is_int8, _bert_loaded
+    if _bert_loaded:
+        return
+    _bert_loaded = True
+    from text.g2pw.torch_api import LightTokenizer
+    tokenizer_json = os.path.join(bert_path, "tokenizer.json")
+    tokenizer_obj = LightTokenizer(tokenizer_json)
+    _int8_path = os.path.join(bert_path + "-22L", "bert_large_int8.pth")
+    if not os.path.exists(_int8_path):
+        _int8_path = os.path.join(bert_path, "bert_large_int8.pth")
+    if os.path.exists(_int8_path):
+        from text.g2pw.torch_api import load_bert_large_int8
+        bert_obj = load_bert_large_int8(_int8_path)
+        _bert_is_int8 = True
+    else:
+        from transformers import AutoModelForMaskedLM
+        bert_obj = AutoModelForMaskedLM.from_pretrained(bert_path)
+        if is_half == True:
+            bert_obj = bert_obj.half().to(device)
+        else:
+            bert_obj = bert_obj.to(device)
+    tokenizer = tokenizer_obj
+    bert_model = bert_obj
 
 
 def get_bert_feature(text, word2ph):
+    _ensure_bert_loaded()
     with torch.no_grad():
         inputs = tokenizer(text, return_tensors="pt")
-        for i in inputs:
-            inputs[i] = inputs[i].to(device)
-        res = bert_model(**inputs, output_hidden_states=True)
-        res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
+        if _bert_is_int8:
+            res = bert_model(inputs["input_ids"], inputs["token_type_ids"], inputs["attention_mask"])
+            res = res[0, 1:-1].float()
+        else:
+            for i in inputs:
+                inputs[i] = inputs[i].to(device)
+            res = bert_model(**inputs, output_hidden_states=True)
+            res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
     assert len(word2ph) == len(text)
     phone_level_feature = []
     for i in range(len(word2ph)):

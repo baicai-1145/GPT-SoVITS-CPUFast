@@ -9,7 +9,7 @@ from typing import List, Optional
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torchmetrics.classification import MulticlassAccuracy
+MulticlassAccuracy = None  # 推理时不需要，避免 torchmetrics 拉 transformers
 from AR.models.utils import (
     dpo_loss,
     get_batch_logps,
@@ -503,7 +503,7 @@ class Text2SemanticDecoder(nn.Module):
             average="micro",
             multidim_average="global",
             ignore_index=self.EOS,
-        )
+        ) if MulticlassAccuracy is not None else None
 
         if build_t2s_transformer:
             self.rebuild_t2s_transformer()

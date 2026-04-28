@@ -150,7 +150,16 @@ sys.path.append(now_dir)
 sys.path.append("%s/GPT_SoVITS" % (now_dir))
 
 import signal
-from text.LangSegmenter import LangSegmenter
+class _LazyLangSegmenter:
+    _mod = None
+    @classmethod
+    def getTexts(cls, text, lang=""):
+        if cls._mod is None:
+            from text.LangSegmenter import LangSegmenter
+            cls._mod = LangSegmenter
+        return cls._mod.getTexts(text, lang)
+
+LangSegmenter = _LazyLangSegmenter
 from time import time as ttime
 import torch
 import torchaudio
@@ -159,7 +168,6 @@ import soundfile as sf
 from fastapi import FastAPI, Request, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 import uvicorn
-from transformers import AutoModelForMaskedLM, AutoTokenizer
 import numpy as np
 from feature_extractor import cnhubert
 from io import BytesIO
@@ -343,20 +351,27 @@ def change_gpt_sovits_weights(gpt_path, sovits_path):
     return JSONResponse({"code": 0, "message": "Success"}, status_code=200)
 
 
+_bert_is_int8 = os.path.exists(_bert_int8_path) if '_bert_int8_path' in dir() else False
+
+
 def get_bert_feature(text, word2ph):
+    _ensure_bert_loaded()
     with torch.no_grad():
         inputs = tokenizer(text, return_tensors="pt")
-        for i in inputs:
-            inputs[i] = inputs[i].to(device)  #####输入是long不用管精度问题，精度随bert_model
-        res = bert_model(**inputs, output_hidden_states=True)
-        res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
+        if _bert_is_int8:
+            res = bert_model(inputs["input_ids"], inputs["token_type_ids"], inputs["attention_mask"])
+            res = res[0, 1:-1].float()
+        else:
+            for i in inputs:
+                inputs[i] = inputs[i].to(device)
+            res = bert_model(**inputs, output_hidden_states=True)
+            res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
     assert len(word2ph) == len(text)
     phone_level_feature = []
     for i in range(len(word2ph)):
         repeat_feature = res[i].repeat(word2ph[i], 1)
         phone_level_feature.append(repeat_feature)
     phone_level_feature = torch.cat(phone_level_feature, dim=0)
-    # if(is_half==True):phone_level_feature=phone_level_feature.half()
     return phone_level_feature.T
 
 
@@ -1042,14 +1057,44 @@ else:
 
 # 初始化模型
 cnhubert.cnhubert_base_path = cnhubert_base_path
-tokenizer = AutoTokenizer.from_pretrained(bert_path)
-bert_model = AutoModelForMaskedLM.from_pretrained(bert_path)
+
+# BERT + tokenizer 懒加载 (仅中文推理需要)
+tokenizer = None
+bert_model = None
+_bert_is_int8 = False
+_bert_loaded = False
+
+def _ensure_bert_loaded():
+    global tokenizer, bert_model, _bert_is_int8, _bert_loaded
+    if _bert_loaded:
+        return
+    _bert_loaded = True
+    from text.g2pw.torch_api import LightTokenizer
+    tokenizer_json = os.path.join(bert_path, "tokenizer.json")
+    tokenizer_obj = LightTokenizer(tokenizer_json)
+    _int8_path = os.path.join(bert_path + "-22L", "bert_large_int8.pth")
+    if not os.path.exists(_int8_path):
+        _int8_path = os.path.join(bert_path, "bert_large_int8.pth")
+    if os.path.exists(_int8_path):
+        from text.g2pw.torch_api import load_bert_large_int8
+        bert_obj = load_bert_large_int8(_int8_path)
+        _bert_is_int8 = True
+        logger.info("BERT-large INT8 懒加载完成")
+    else:
+        from transformers import AutoModelForMaskedLM
+        bert_obj = AutoModelForMaskedLM.from_pretrained(bert_path)
+        if is_half:
+            bert_obj = bert_obj.half().to(device)
+        else:
+            bert_obj = bert_obj.to(device)
+        logger.info("BERT-large FP32 懒加载完成")
+    tokenizer = tokenizer_obj
+    bert_model = bert_obj
+
 ssl_model = cnhubert.get_model()
 if is_half:
-    bert_model = bert_model.half().to(device)
     ssl_model = ssl_model.half().to(device)
 else:
-    bert_model = bert_model.to(device)
     ssl_model = ssl_model.to(device)
 change_gpt_sovits_weights(gpt_path=gpt_path, sovits_path=sovits_path)
 

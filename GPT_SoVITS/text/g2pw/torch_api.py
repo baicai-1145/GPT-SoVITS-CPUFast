@@ -471,3 +471,147 @@ class G2PWTorchConverter(_G2PWBaseOnnxConverter):
         preds = np.argmax(probs, axis=1).tolist()
         confidences = [float(probs[i, p]) for i, p in enumerate(preds)]
         return [self.labels[p] for p in preds], confidences
+
+
+def load_bert_large_int8(int8_path: str) -> BertModel_:
+    """加载 BERT-large INT8 量化模型，返回手写 BertModel_"""
+    from torch.ao.nn.quantized import Linear as QLinear
+    sd = torch.load(int8_path, map_location="cpu", weights_only=True)
+
+    hidden_size = sd["embeddings.word_embeddings.weight_int8"].shape[1]
+    num_layers = max(int(k.split(".")[2]) for k in sd if k.startswith("encoder.layer.")) + 1
+    num_heads = hidden_size // 64
+    for i in range(num_layers):
+        for key in [f"encoder.layer.{i}.intermediate.dense.weight",
+                    f"encoder.layer.{i}.intermediate.dense.weight_int8"]:
+            if key in sd:
+                intermediate_size = sd[key].shape[0]
+                break
+        else:
+            continue
+        break
+
+    def _pop(key):
+        return sd.pop(key)
+
+    def _is_quantized(prefix):
+        return f"{prefix}.out_scale" in sd
+
+    def _make_qlinear(prefix):
+        w = _pop(f"{prefix}.weight"); s = _pop(f"{prefix}.w_scale"); zp = _pop(f"{prefix}.w_zero_point")
+        b = sd.pop(f"{prefix}.bias", None)
+        out_s = _pop(f"{prefix}.out_scale").item(); out_zp = _pop(f"{prefix}.out_zero_point").item()
+        if s.dim() == 0:
+            qw = torch._make_per_tensor_quantized_tensor(w, s.item(), zp.item())
+        else:
+            qw = torch._make_per_channel_quantized_tensor(w, s, zp, 0)
+        ql = QLinear(w.shape[1], w.shape[0]); ql.set_weight_bias(qw, b)
+        ql.scale = out_s; ql.zero_point = out_zp
+        return ql
+
+    def _make_int8emb(prefix):
+        return Int8Embedding(_pop(f"{prefix}.weight_int8"), _pop(f"{prefix}.scale"))
+
+    def _make_int8linear(prefix):
+        return Int8Linear(_pop(f"{prefix}.weight_int8"), _pop(f"{prefix}.scale"), sd.pop(f"{prefix}.bias", None))
+
+    def _make_linear(prefix):
+        if f"{prefix}.weight_int8" in sd:
+            return _make_int8linear(prefix)
+        if _is_quantized(prefix):
+            return _make_qlinear(prefix)
+        w = _pop(f"{prefix}.weight"); b = sd.pop(f"{prefix}.bias", None)
+        lin = nn.Linear(w.shape[1], w.shape[0], bias=b is not None)
+        lin.weight.data = w
+        if b is not None:
+            lin.bias.data = b
+        return lin
+
+    def _make_layernorm(prefix):
+        w = _pop(f"{prefix}.weight"); b = _pop(f"{prefix}.bias")
+        ln = nn.LayerNorm(w.shape[0]); ln.weight.data = w; ln.bias.data = b
+        return ln
+
+    def _make_quantizer(prefix):
+        return torch.ao.nn.quantized.Quantize(
+            _pop(f"{prefix}.scale").item(), _pop(f"{prefix}.zero_point").item(), torch.quint8)
+
+    def _make_dequantizer():
+        return torch.ao.nn.quantized.DeQuantize()
+
+    def _build_self_attn(prefix):
+        sa = BertSelfAttention.__new__(BertSelfAttention); nn.Module.__init__(sa)
+        sa.num_heads = num_heads; sa.head_dim = 64
+        if _is_quantized(f"{prefix}.query"):
+            sa.quant = _make_quantizer(f"{prefix}.quant")
+            sa.query = _make_qlinear(f"{prefix}.query")
+            sa.key = _make_qlinear(f"{prefix}.key")
+            sa.value = _make_qlinear(f"{prefix}.value")
+            sa.dequant_q = _make_dequantizer(); sa.dequant_k = _make_dequantizer(); sa.dequant_v = _make_dequantizer()
+        else:
+            sa.quant = ao_quant.QuantStub()
+            sa.query = _make_linear(f"{prefix}.query")
+            sa.key = _make_linear(f"{prefix}.key")
+            sa.value = _make_linear(f"{prefix}.value")
+            sa.dequant_q = ao_quant.DeQuantStub(); sa.dequant_k = ao_quant.DeQuantStub(); sa.dequant_v = ao_quant.DeQuantStub()
+        return sa
+
+    def _build_submodule(prefix, cls, has_residual=False):
+        mod = cls.__new__(cls); nn.Module.__init__(mod)
+        if _is_quantized(f"{prefix}.dense"):
+            mod.quant = _make_quantizer(f"{prefix}.quant")
+            mod.dense = _make_qlinear(f"{prefix}.dense")
+            mod.dequant = _make_dequantizer()
+        else:
+            mod.quant = ao_quant.QuantStub()
+            mod.dense = _make_linear(f"{prefix}.dense")
+            mod.dequant = ao_quant.DeQuantStub()
+        if has_residual:
+            mod.LayerNorm = _make_layernorm(f"{prefix}.LayerNorm")
+        return mod
+
+    model = BertModel_.__new__(BertModel_); nn.Module.__init__(model)
+    emb = BertEmbeddings.__new__(BertEmbeddings); nn.Module.__init__(emb)
+    emb.word_embeddings = _make_int8emb("embeddings.word_embeddings")
+    emb.position_embeddings = _make_int8emb("embeddings.position_embeddings")
+    emb.token_type_embeddings = _make_int8emb("embeddings.token_type_embeddings")
+    emb.LayerNorm = _make_layernorm("embeddings.LayerNorm")
+    model.embeddings = emb
+
+    encoder = BertEncoder.__new__(BertEncoder); nn.Module.__init__(encoder)
+    layers = []
+    for i in range(num_layers):
+        lp = f"encoder.layer.{i}"
+        layer = BertLayer.__new__(BertLayer); nn.Module.__init__(layer)
+        attn = BertAttention.__new__(BertAttention); nn.Module.__init__(attn)
+        attn.self = _build_self_attn(f"{lp}.attention.self")
+        attn.output = _build_submodule(f"{lp}.attention.output", BertAttentionOutput, has_residual=True)
+        layer.attention = attn
+        layer.intermediate = _build_submodule(f"{lp}.intermediate", BertIntermediate)
+        layer.output = _build_submodule(f"{lp}.output", BertOutput, has_residual=True)
+        layers.append(layer)
+    encoder.layer = nn.ModuleList(layers)
+    model.encoder = encoder
+
+    del sd
+    model.eval()
+    return model
+
+
+class LightTokenizer:
+    """轻量 BERT tokenizer，替代 transformers.AutoTokenizer，省 238 MB"""
+    def __init__(self, tokenizer_json_path: str):
+        from tokenizers import Tokenizer as _Tokenizer
+        self._tok = _Tokenizer.from_file(tokenizer_json_path)
+
+    def __call__(self, text, return_tensors=None, **kwargs):
+        import torch as _torch
+        enc = self._tok.encode(text)
+        out = {
+            "input_ids": enc.ids,
+            "token_type_ids": enc.type_ids,
+            "attention_mask": enc.attention_mask,
+        }
+        if return_tensors == "pt":
+            out = {k: _torch.tensor([v]) for k, v in out.items()}
+        return out
