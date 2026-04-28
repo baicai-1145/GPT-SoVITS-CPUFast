@@ -2,9 +2,12 @@ import os
 import re
 from functools import lru_cache
 
+from text.g2pw.compact_pypinyin import install as _install_compact_pypinyin
+_install_compact_pypinyin()
+
 from pypinyin import Style
 from pypinyin import pinyin
-from pypinyin.constants import PHRASES_DICT
+from pypinyin import constants as _pypinyin_constants
 from pypinyin.contrib.tone_convert import to_finals_tone3, to_initials
 
 from text.symbols import punctuation
@@ -32,11 +35,11 @@ from text.phone_units import finalize_phone_units
 is_g2pw = True  # True if is_g2pw_str.lower() == 'true' else False
 if is_g2pw:
     # print("当前使用g2pw进行拼音推理")
-    from text.g2pw.onnx_api import G2PWOnnxConverter
+    from text.g2pw.torch_api import G2PWTorchConverter
     from text.g2pw.pronunciation import correct_pronunciation, get_phrase_pronunciation
 
     parent_directory = os.path.dirname(current_file_path)
-    g2pw = G2PWOnnxConverter(
+    g2pw = G2PWTorchConverter(
         model_dir="GPT_SoVITS/text/G2PWModel",
         style="pinyin",
         model_source=os.environ.get("bert_path", "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"),
@@ -126,7 +129,7 @@ def _get_phrase_level_pinyin_override(word: str):
     if not _word_has_g2pw_polyphonic_char(word):
         return None
 
-    lookup_word = word if word in PHRASES_DICT else simplified_word if simplified_word in PHRASES_DICT else None
+    lookup_word = word if word in _pypinyin_constants.PHRASES_DICT else simplified_word if simplified_word in _pypinyin_constants.PHRASES_DICT else None
     if lookup_word is None:
         return None
 

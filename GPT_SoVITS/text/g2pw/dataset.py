@@ -57,10 +57,10 @@ def prepare_onnx_input(
         char2id = {char: idx for idx, char in enumerate(chars)}
     if use_mask:
         if char_phoneme_masks is None:
-            char_phoneme_masks = {
-                char: [1 if i in char2phonemes[char] else 0 for i in range(len(labels))]
-                for char in char2phonemes
-            }
+            char_phoneme_masks = np.array(
+                [[1 if i in char2phonemes[char] else 0 for i in range(len(labels))] for char in chars],
+                dtype=np.int8,
+            )
     else:
         full_phoneme_mask = [1] * len(labels)
 
@@ -128,7 +128,7 @@ def prepare_onnx_input(
 
         query_char = text_for_query[query_id_for_query]
         if use_mask:
-            phoneme_mask = char_phoneme_masks[query_char]
+            phoneme_mask = char_phoneme_masks[char2id[query_char]].tolist()
         else:
             phoneme_mask = full_phoneme_mask
         char_id = char2id[query_char]

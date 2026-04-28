@@ -5,7 +5,7 @@ from pypinyin.core import Pinyin, Style
 from pypinyin.seg.simpleseg import simple_seg
 from pypinyin.converter import UltimateConverter
 from pypinyin.contrib.tone_convert import to_tone
-from .onnx_api import G2PWOnnxConverter
+from .torch_api import G2PWTorchConverter as G2PWOnnxConverter
 from .pronunciation import correct_pronunciation
 
 

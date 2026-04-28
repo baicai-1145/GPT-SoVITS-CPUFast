@@ -8,8 +8,10 @@ import warnings
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
+from .compact_pypinyin import install as _install_compact_pypinyin
+_install_compact_pypinyin()
+
 import numpy as np
-import onnxruntime
 from opencc import OpenCC
 from pypinyin import Style, pinyin
 from tokenizers import Tokenizer
@@ -18,11 +20,6 @@ from ..zh_normalization.char_convert import tranditional_to_simplified
 from .dataset import get_char_phoneme_labels, get_phoneme_labels, prepare_onnx_input
 from .utils import load_config
 
-onnxruntime.set_default_logger_severity(3)
-try:
-    onnxruntime.preload_dlls()
-except Exception:
-    pass
 warnings.filterwarnings("ignore")
 
 model_version = "1.1"
@@ -128,10 +125,10 @@ def _build_static_assets(model_dir: str, use_char_phoneme: bool, use_mask: bool)
     chars = sorted(list(char2phonemes.keys()))
     char2id = {char: idx for idx, char in enumerate(chars)}
     char_phoneme_masks = (
-        {
-            char: [1 if i in char2phonemes[char] else 0 for i in range(len(labels))]
-            for char in char2phonemes
-        }
+        np.array(
+            [[1 if i in char2phonemes[char] else 0 for i in range(len(labels))] for char in chars],
+            dtype=np.int8,
+        )
         if use_mask
         else None
     )
@@ -167,7 +164,7 @@ def _build_static_assets(model_dir: str, use_char_phoneme: bool, use_mask: bool)
     with open(sources["bopomofo_to_pinyin"], "r", encoding="utf-8") as fr:
         bopomofo_convert_dict = json.load(fr)
     with open(sources["char_bopomofo"], "r", encoding="utf-8") as fr:
-        char_bopomofo_dict = json.load(fr)
+        char_bopomofo_dict = frozenset(json.load(fr).keys())
 
     return {
         "cache_version": STATIC_ASSETS_CACHE_VERSION,
@@ -432,6 +429,9 @@ class G2PWOnnxConverter(_G2PWBaseOnnxConverter):
             model_source=model_source,
             enable_non_tradional_chinese=enable_non_tradional_chinese,
         )
+
+        import onnxruntime
+        onnxruntime.set_default_logger_severity(3)
 
         sess_options = onnxruntime.SessionOptions()
         sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL
