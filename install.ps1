@@ -1,6 +1,7 @@
 Param (
     [Parameter(Mandatory=$true)][ValidateSet("HF", "HF-Mirror", "ModelScope")][string]$Source,
-    [Parameter(Mandatory=$true)][ValidateSet("v1", "v2", "v2Pro", "v2ProPlus", "all")][string]$Version
+    [Parameter(Mandatory=$true)][ValidateSet("v1", "v2", "v2Pro", "v2ProPlus", "all")][string]$Version,
+    [string]$PipIndexUrl = ""
 )
 
 $global:ErrorActionPreference = 'Stop'
@@ -292,7 +293,12 @@ Invoke-Pip torch --index-url "https://download.pytorch.org/whl/cpu"
 Write-Success "PyTorch Installed"
 
 Write-Info "Installing Python Dependencies From requirements.txt..."
-Invoke-Pip -r requirements.txt
+if ($PipIndexUrl) {
+    Write-Info "Using pip index mirror: $PipIndexUrl"
+    Invoke-Pip -i $PipIndexUrl -r requirements.txt
+} else {
+    Invoke-Pip -r requirements.txt
+}
 Write-Success "Python Dependencies Installed"
 
 Write-Info "Downloading NLTK Data..."

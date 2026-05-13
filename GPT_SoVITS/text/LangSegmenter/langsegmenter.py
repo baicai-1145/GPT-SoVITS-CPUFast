@@ -1,10 +1,6 @@
 import logging
 import re
 
-# jieba静音
-import jieba
-jieba.setLogLevel(logging.CRITICAL)
-
 # 更改fast_langdetect大模型位置
 from pathlib import Path
 import fast_langdetect

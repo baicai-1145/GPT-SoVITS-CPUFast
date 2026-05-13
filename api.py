@@ -153,20 +153,17 @@ import signal
 from text.LangSegmenter import LangSegmenter
 from time import time as ttime
 import torch
-import torchaudio
-import librosa
-import soundfile as sf
 from fastapi import FastAPI, Request, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 import uvicorn
-from transformers import AutoModelForMaskedLM, AutoTokenizer
 import numpy as np
 from feature_extractor import cnhubert
 from io import BytesIO
 from module.models import SynthesizerTrn
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
-from tools.audio_utils import load_audio_tensor
+from tools.audio_utils import load_audio_mono, load_audio_tensor, resample_audio_tensor, write_ogg_bytes, write_wav_bytes
 from text import cleaned_text_to_sequence
+from text import chinese_bert
 from text.cleaner import clean_text
 import config as global_config
 import logging
@@ -231,11 +228,7 @@ resample_transform_dict = {}
 
 
 def resample(audio_tensor, sr0, sr1, device):
-    global resample_transform_dict
-    key = "%s-%s-%s" % (sr0, sr1, str(device))
-    if key not in resample_transform_dict:
-        resample_transform_dict[key] = torchaudio.transforms.Resample(sr0, sr1).to(device)
-    return resample_transform_dict[key](audio_tensor)
+    return resample_audio_tensor(audio_tensor.to(device), sr0, sr1)
 
 
 class Speaker:
@@ -344,20 +337,7 @@ def change_gpt_sovits_weights(gpt_path, sovits_path):
 
 
 def get_bert_feature(text, word2ph):
-    with torch.no_grad():
-        inputs = tokenizer(text, return_tensors="pt")
-        for i in inputs:
-            inputs[i] = inputs[i].to(device)  #####输入是long不用管精度问题，精度随bert_model
-        res = bert_model(**inputs, output_hidden_states=True)
-        res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
-    assert len(word2ph) == len(text)
-    phone_level_feature = []
-    for i in range(len(word2ph)):
-        repeat_feature = res[i].repeat(word2ph[i], 1)
-        phone_level_feature.append(repeat_feature)
-    phone_level_feature = torch.cat(phone_level_feature, dim=0)
-    # if(is_half==True):phone_level_feature=phone_level_feature.half()
-    return phone_level_feature.T
+    return chinese_bert.get_bert_feature(bert_model, tokenizer, text, word2ph, device)
 
 
 def clean_text_inf(text, language, version):
@@ -521,48 +501,7 @@ def pack_audio(audio_bytes, data, rate):
 
 
 def pack_ogg(audio_bytes, data, rate):
-    # Author: AkagawaTsurunaki
-    # Issue:
-    #   Stack overflow probabilistically occurs
-    #   when the function `sf_writef_short` of `libsndfile_64bit.dll` is called
-    #   using the Python library `soundfile`
-    # Note:
-    #   This is an issue related to `libsndfile`, not this project itself.
-    #   It happens when you generate a large audio tensor (about 499804 frames in my PC)
-    #   and try to convert it to an ogg file.
-    # Related:
-    #   https://github.com/RVC-Boss/GPT-SoVITS/issues/1199
-    #   https://github.com/libsndfile/libsndfile/issues/1023
-    #   https://github.com/bastibe/python-soundfile/issues/396
-    # Suggestion:
-    #   Or split the whole audio data into smaller audio segment to avoid stack overflow?
-
-    def handle_pack_ogg():
-        with sf.SoundFile(audio_bytes, mode="w", samplerate=rate, channels=1, format="ogg") as audio_file:
-            audio_file.write(data)
-
-    import threading
-
-    # See: https://docs.python.org/3/library/threading.html
-    # The stack size of this thread is at least 32768
-    # If stack overflow error still occurs, just modify the `stack_size`.
-    # stack_size = n * 4096, where n should be a positive integer.
-    # Here we chose n = 4096.
-    stack_size = 4096 * 4096
-    try:
-        threading.stack_size(stack_size)
-        pack_ogg_thread = threading.Thread(target=handle_pack_ogg)
-        pack_ogg_thread.start()
-        pack_ogg_thread.join()
-    except RuntimeError as e:
-        # If changing the thread stack size is unsupported, a RuntimeError is raised.
-        print("RuntimeError: {}".format(e))
-        print("Changing the thread stack size is unsupported.")
-    except ValueError as e:
-        # If the specified stack size is invalid, a ValueError is raised and the stack size is unmodified.
-        print("ValueError: {}".format(e))
-        print("The specified stack size is invalid.")
-
+    audio_bytes.write(write_ogg_bytes(data, rate))
     return audio_bytes
 
 
@@ -575,13 +514,9 @@ def pack_raw(audio_bytes, data, rate):
 def pack_wav(audio_bytes, rate):
     if is_int32:
         data = np.frombuffer(audio_bytes.getvalue(), dtype=np.int32)
-        wav_bytes = BytesIO()
-        sf.write(wav_bytes, data, rate, format="WAV", subtype="PCM_32")
     else:
         data = np.frombuffer(audio_bytes.getvalue(), dtype=np.int16)
-        wav_bytes = BytesIO()
-        sf.write(wav_bytes, data, rate, format="WAV")
-    return wav_bytes
+    return BytesIO(write_wav_bytes(data, rate))
 
 
 def pack_aac(audio_bytes, data, rate):
@@ -698,7 +633,7 @@ def get_tts_wav(
     dtype = torch.float16 if is_half == True else torch.float32
     zero_wav = np.zeros(int(hps.data.sampling_rate * 0.3), dtype=np.float16 if is_half == True else np.float32)
     with torch.no_grad():
-        wav16k, sr = librosa.load(ref_wav_path, sr=16000)
+        wav16k = load_audio_mono(ref_wav_path, sample_rate=16000)
         wav16k = torch.from_numpy(wav16k)
         zero_wav_torch = torch.from_numpy(zero_wav)
         if is_half == True:
@@ -1042,8 +977,8 @@ else:
 
 # 初始化模型
 cnhubert.cnhubert_base_path = cnhubert_base_path
-tokenizer = AutoTokenizer.from_pretrained(bert_path)
-bert_model = AutoModelForMaskedLM.from_pretrained(bert_path)
+tokenizer = chinese_bert.load_tokenizer(bert_path)
+bert_model = chinese_bert.load_model(bert_path)
 ssl_model = cnhubert.get_model()
 if is_half:
     bert_model = bert_model.half().to(device)

@@ -106,7 +106,7 @@ Chinese shows an even larger end-to-end gain than the overall average because it
 
 ### What Was Deliberately Not Used
 
-- ONNX / ORT was not kept in the main inference path. `dec-only ORT`, `flow + dec ORT`, and larger graph-level ORT experiments were all tried, but on the current machine and dependency stack they did not produce a solution that was simultaneously quality-safe, faster, and lighter than the PyTorch path, so the runtime stayed on pure PyTorch.
+- ONNX / ORT was not adopted. `dec-only ORT`, `flow + dec ORT`, and larger graph-level ORT experiments were all tried, but on the current machine and dependency stack they did not produce a solution that was simultaneously quality-safe, faster, and lighter than the PyTorch path, so the runtime stayed on pure PyTorch and the ONNX compatibility path was removed.
 - The Chinese path was not simplified by dropping quality-critical frontend pieces. `g2pw` stayed, Chinese BERT stayed, and the project did not switch to lighter but lower-quality replacements such as `g2pm`, which are more likely to cause noticeable G2P errors on harder text, especially literary or classical material.
 - The main path also does not rely on secondary splitting just to manufacture larger batches. That direction was explored in benchmark-only form, but the results did not stay stable, and the `repeats=3` verification did not justify moving it into the runtime path.
 - VITS parallel synthesis is not exposed in the CPU WebUI. Local CPU measurements showed it can add overhead and slow inference, so the high-performance WebUI keeps VITS synthesis serial while preserving T2S parallel inference.

@@ -9,7 +9,6 @@ from typing import List, Optional
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torchmetrics.classification import MulticlassAccuracy
 from AR.models.utils import (
     dpo_loss,
     get_batch_logps,
@@ -35,6 +34,18 @@ default_config = {
 }
 
 MAX_AR_DECODE_STEPS = 1500
+
+
+def _build_multiclass_accuracy_for_training(vocab_size: int, top_k: int, eos_id: int):
+    from torchmetrics.classification import MulticlassAccuracy
+
+    return MulticlassAccuracy(
+        vocab_size,
+        top_k=top_k,
+        average="micro",
+        multidim_average="global",
+        ignore_index=eos_id,
+    )
 
 
 def _alloc_token_buffer(initial_tokens: torch.Tensor, max_decode_steps: int) -> torch.Tensor:
@@ -497,13 +508,11 @@ class Text2SemanticDecoder(nn.Module):
         self.ar_predict_layer = nn.Linear(self.model_dim, self.vocab_size, bias=False)
         self.loss_fct = nn.CrossEntropyLoss(reduction="sum")
 
-        self.ar_accuracy_metric = MulticlassAccuracy(
+        self.ar_accuracy_metric = _build_multiclass_accuracy_for_training(
             self.vocab_size,
             top_k=top_k,
-            average="micro",
-            multidim_average="global",
-            ignore_index=self.EOS,
-        )
+            eos_id=self.EOS,
+        ) if build_h_module else None
 
         if build_t2s_transformer:
             self.rebuild_t2s_transformer()

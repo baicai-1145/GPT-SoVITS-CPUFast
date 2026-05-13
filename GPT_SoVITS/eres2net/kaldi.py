@@ -2,7 +2,6 @@ import math
 from typing import Tuple
 
 import torch
-import torchaudio
 from torch import Tensor
 
 __all__ = [
@@ -678,12 +677,10 @@ def fbank(
 
 def _get_dct_matrix(num_ceps: int, num_mel_bins: int) -> Tensor:
     # returns a dct matrix of size (num_mel_bins, num_ceps)
-    # size (num_mel_bins, num_mel_bins)
-    dct_matrix = torchaudio.functional.create_dct(num_mel_bins, num_mel_bins, "ortho")
-    # kaldi expects the first cepstral to be weighted sum of factor sqrt(1/num_mel_bins)
-    # this would be the first column in the dct_matrix for torchaudio as it expects a
-    # right multiply (which would be the first column of the kaldi's dct_matrix as kaldi
-    # expects a left multiply e.g. dct_matrix * vector).
+    n = torch.arange(num_mel_bins, dtype=torch.float32).unsqueeze(1)
+    k = torch.arange(num_mel_bins, dtype=torch.float32).unsqueeze(0)
+    dct_matrix = torch.cos(math.pi / float(num_mel_bins) * (n + 0.5) * k)
+    dct_matrix[:, 1:] *= math.sqrt(2.0 / float(num_mel_bins))
     dct_matrix[:, 0] = math.sqrt(1 / float(num_mel_bins))
     dct_matrix = dct_matrix[:, :num_ceps]
     return dct_matrix

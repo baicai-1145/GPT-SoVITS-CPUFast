@@ -60,6 +60,7 @@ run_wget_quiet() {
 
 WORKFLOW=${WORKFLOW:-"false"}
 MODEL_VERSION=""
+PIP_INDEX_URL=""
 
 USE_HF=false
 USE_HF_MIRROR=false
@@ -72,11 +73,13 @@ print_help() {
     echo "  --source   HF|HF-Mirror|ModelScope     Specify the model source (REQUIRED)"
     echo "  --version  v1|v2|v2Pro|v2ProPlus|all"
     echo "                                            Specify which inference pretrained files to download (REQUIRED)"
+    echo "  --pip-index-url URL                    Optional pip index mirror for requirements installation"
     echo "  -h, --help                             Show this help message and exit"
     echo ""
     echo "Examples:"
     echo "  bash install.sh --source HF --version v2Pro"
     echo "  bash install.sh --source ModelScope --version all"
+    echo "  bash install.sh --source HF-Mirror --version v2ProPlus --pip-index-url https://pypi.tuna.tsinghua.edu.cn/simple"
 }
 
 # Show help if no arguments provided
@@ -118,6 +121,14 @@ while [[ $# -gt 0 ]]; do
             exit 1
             ;;
         esac
+        shift 2
+        ;;
+    --pip-index-url)
+        if [ -z "$2" ]; then
+            echo -e "${ERROR}Error: --pip-index-url requires a value"
+            exit 1
+        fi
+        PIP_INDEX_URL="$2"
         shift 2
         ;;
     -h | --help)
@@ -341,7 +352,12 @@ echo -e "${INFO}Installing Python Dependencies From requirements.txt..."
 
 hash -r
 
-run_pip_quiet -r requirements.txt
+if [ -n "$PIP_INDEX_URL" ]; then
+    echo -e "${INFO}Using pip index mirror: ${PIP_INDEX_URL}"
+    run_pip_quiet -i "$PIP_INDEX_URL" -r requirements.txt
+else
+    run_pip_quiet -r requirements.txt
+fi
 
 echo -e "${SUCCESS}Python Dependencies Installed"
 

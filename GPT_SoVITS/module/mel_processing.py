@@ -1,6 +1,5 @@
 import torch
 import torch.utils.data
-from librosa.filters import mel as librosa_mel_fn
 
 MAX_WAV_VALUE = 32768.0
 
@@ -35,6 +34,41 @@ def spectral_de_normalize_torch(magnitudes):
 
 mel_basis = {}
 hann_window = {}
+
+
+def _hz_to_mel(freq: torch.Tensor) -> torch.Tensor:
+    min_log_hz = 1000.0
+    min_log_mel = 15.0
+    logstep = 27.0 / torch.log(torch.tensor(6.4, dtype=freq.dtype, device=freq.device))
+    linear = 3.0 * freq / 200.0
+    log = min_log_mel + torch.log(freq / min_log_hz) * logstep
+    return torch.where(freq >= min_log_hz, log, linear)
+
+
+def _mel_to_hz(mels: torch.Tensor) -> torch.Tensor:
+    min_log_hz = 1000.0
+    min_log_mel = 15.0
+    logstep = torch.log(torch.tensor(6.4, dtype=mels.dtype, device=mels.device)) / 27.0
+    linear = 200.0 * mels / 3.0
+    log = min_log_hz * torch.exp(logstep * (mels - min_log_mel))
+    return torch.where(mels >= min_log_mel, log, linear)
+
+
+def mel_filter_bank(sr, n_fft, n_mels, fmin, fmax, dtype, device):
+    if fmax is None:
+        fmax = float(sr) / 2.0
+    fft_freqs = torch.linspace(0, float(sr) / 2.0, int(1 + n_fft // 2), dtype=dtype, device=device)
+    mel_min = _hz_to_mel(torch.tensor(float(fmin), dtype=dtype, device=device))
+    mel_max = _hz_to_mel(torch.tensor(float(fmax), dtype=dtype, device=device))
+    mel_points = torch.linspace(mel_min, mel_max, n_mels + 2, dtype=dtype, device=device)
+    hz_points = _mel_to_hz(mel_points)
+
+    ramps = hz_points[:, None] - fft_freqs[None, :]
+    lower = -ramps[:-2] / (hz_points[1:-1] - hz_points[:-2])[:, None]
+    upper = ramps[2:] / (hz_points[2:] - hz_points[1:-1])[:, None]
+    weights = torch.maximum(torch.zeros((), dtype=dtype, device=device), torch.minimum(lower, upper))
+    enorm = 2.0 / (hz_points[2 : n_mels + 2] - hz_points[:n_mels])
+    return weights * enorm[:, None]
 
 
 def spectrogram_torch(y, n_fft, sampling_rate, hop_size, win_size, center=False):
@@ -81,9 +115,7 @@ def spec_to_mel_torch(spec, n_fft, num_mels, sampling_rate, fmin, fmax):
     key = "%s-%s-%s-%s-%s-%s" % (dtype_device, n_fft, num_mels, sampling_rate, fmin, fmax)
     # if fmax_dtype_device not in mel_basis:
     if key not in mel_basis:
-        mel = librosa_mel_fn(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
-        # mel_basis[fmax_dtype_device] = torch.from_numpy(mel).to(dtype=spec.dtype, device=spec.device)
-        mel_basis[key] = torch.from_numpy(mel).to(dtype=spec.dtype, device=spec.device)
+        mel_basis[key] = mel_filter_bank(sampling_rate, n_fft, num_mels, fmin, fmax, spec.dtype, spec.device)
     # spec = torch.matmul(mel_basis[fmax_dtype_device], spec)
     spec = torch.matmul(mel_basis[key], spec)
     spec = spectral_normalize_torch(spec)
@@ -112,8 +144,9 @@ def mel_spectrogram_torch(y, n_fft, num_mels, sampling_rate, hop_size, win_size,
     # wnsize_dtype_device = str(win_size) + '_' + dtype_device
     wnsize_dtype_device = fmax_dtype_device
     if fmax_dtype_device not in mel_basis:
-        mel = librosa_mel_fn(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
-        mel_basis[fmax_dtype_device] = torch.from_numpy(mel).to(dtype=y.dtype, device=y.device)
+        mel_basis[fmax_dtype_device] = mel_filter_bank(
+            sampling_rate, n_fft, num_mels, fmin, fmax, y.dtype, y.device
+        )
     if wnsize_dtype_device not in hann_window:
         hann_window[wnsize_dtype_device] = torch.hann_window(win_size).to(dtype=y.dtype, device=y.device)
 

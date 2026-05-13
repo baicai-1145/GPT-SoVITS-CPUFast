@@ -5,7 +5,7 @@ from pypinyin.core import Pinyin, Style
 from pypinyin.seg.simpleseg import simple_seg
 from pypinyin.converter import UltimateConverter
 from pypinyin.contrib.tone_convert import to_tone
-from .torch_api import G2PWTorchConverter as G2PWOnnxConverter
+from .torch_api import G2PWTorchConverter
 from .pronunciation import correct_pronunciation
 
 
@@ -20,7 +20,7 @@ class G2PWPinyin(Pinyin):
         tone_sandhi=False,
         **kwargs,
     ):
-        self._g2pw = G2PWOnnxConverter(
+        self._g2pw = G2PWTorchConverter(
             model_dir=model_dir,
             style="pinyin",
             model_source=model_source,

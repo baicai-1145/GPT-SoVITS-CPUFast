@@ -9,6 +9,7 @@ import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from .compact_pypinyin import install as _install_compact_pypinyin
+
 _install_compact_pypinyin()
 
 import numpy as np
@@ -23,7 +24,7 @@ from .utils import load_config
 warnings.filterwarnings("ignore")
 
 model_version = "1.1"
-STATIC_ASSETS_CACHE_VERSION = 1
+STATIC_ASSETS_CACHE_VERSION = 2
 
 
 class _TokenizerAdapter:
@@ -40,42 +41,6 @@ class _TokenizerAdapter:
             token_id = self._tokenizer.token_to_id(token)
             ids.append(self._unk_id if token_id is None else token_id)
         return ids
-
-
-def predict(session, onnx_input: Dict[str, Any], labels: List[str]) -> Tuple[List[str], List[float]]:
-    all_preds = []
-    all_confidences = []
-    probs = session.run(
-        [],
-        {
-            "input_ids": onnx_input["input_ids"],
-            "token_type_ids": onnx_input["token_type_ids"],
-            "attention_mask": onnx_input["attention_masks"],
-            "phoneme_mask": onnx_input["phoneme_masks"],
-            "char_ids": onnx_input["char_ids"],
-            "position_ids": onnx_input["position_ids"],
-        },
-    )[0]
-
-    preds = np.argmax(probs, axis=1).tolist()
-    max_probs = []
-    for index, arr in zip(preds, probs.tolist()):
-        max_probs.append(arr[index])
-    all_preds += [labels[pred] for pred in preds]
-    all_confidences += max_probs
-
-    return all_preds, all_confidences
-
-
-def _load_json_from_candidates(filename: str, candidate_dirs: List[str]) -> Dict[str, Any]:
-    for candidate_dir in candidate_dirs:
-        if not candidate_dir:
-            continue
-        json_path = os.path.join(candidate_dir, filename)
-        if os.path.exists(json_path):
-            with open(json_path, "r", encoding="utf-8") as fr:
-                return json.load(fr)
-    raise FileNotFoundError(f"Cannot locate {filename} in candidate dirs: {candidate_dirs}")
 
 
 def _find_first_existing_file(*paths: str) -> str:
@@ -181,6 +146,18 @@ def _build_static_assets(model_dir: str, use_char_phoneme: bool, use_mask: bool)
     }
 
 
+def _normalize_cached_static_assets(cached: Dict[str, Any], use_mask: bool) -> Dict[str, Any]:
+    if not use_mask:
+        return cached
+
+    masks = cached.get("char_phoneme_masks")
+    chars = cached.get("chars")
+    if isinstance(masks, dict) and chars:
+        cached = dict(cached)
+        cached["char_phoneme_masks"] = np.array([masks[char] for char in chars], dtype=np.int8)
+    return cached
+
+
 def _load_or_build_static_assets(model_dir: str, use_char_phoneme: bool, use_mask: bool) -> Dict[str, Any]:
     cache_path = _get_static_assets_cache_path(model_dir, use_char_phoneme=use_char_phoneme, use_mask=use_mask)
     sources = _get_static_asset_sources(model_dir)
@@ -188,6 +165,7 @@ def _load_or_build_static_assets(model_dir: str, use_char_phoneme: bool, use_mas
         try:
             with open(cache_path, "rb") as fr:
                 cached = pickle.load(fr)
+            cached = _normalize_cached_static_assets(cached, use_mask=use_mask)
             if cached.get("cache_version") == STATIC_ASSETS_CACHE_VERSION and all(
                 cached["source_mtimes"].get(key) == os.path.getmtime(path) for key, path in sources.items()
             ):
@@ -230,7 +208,7 @@ def download_and_decompress(model_dir: str = "G2PWModel/"):
     return model_dir
 
 
-class _G2PWBaseOnnxConverter:
+class _G2PWBaseConverter:
     def __init__(
         self,
         model_dir: str = "G2PWModel/",
@@ -274,7 +252,6 @@ class _G2PWBaseOnnxConverter:
             "y",
             "on",
         }
-        # 聚焦到多音字附近上下文，默认左右各16字；设为0表示关闭裁剪（整句）。
         self.polyphonic_context_chars = max(0, int(os.getenv("g2pw_polyphonic_context_chars", "16")))
 
     def _convert_bopomofo_to_pinyin(self, bopomofo: str) -> str:
@@ -320,7 +297,6 @@ class _G2PWBaseOnnxConverter:
             char2id=self.char2id,
             char_phoneme_masks=self.char_phoneme_masks,
         )
-
         if not model_input:
             return partial_results
 
@@ -413,48 +389,3 @@ class _G2PWBaseOnnxConverter:
                 confidences[output_idx] = confidence
 
         return preds, confidences
-
-
-class G2PWOnnxConverter(_G2PWBaseOnnxConverter):
-    def __init__(
-        self,
-        model_dir: str = "G2PWModel/",
-        style: str = "bopomofo",
-        model_source: str = None,
-        enable_non_tradional_chinese: bool = False,
-    ):
-        super().__init__(
-            model_dir=model_dir,
-            style=style,
-            model_source=model_source,
-            enable_non_tradional_chinese=enable_non_tradional_chinese,
-        )
-
-        import onnxruntime
-        onnxruntime.set_default_logger_severity(3)
-
-        sess_options = onnxruntime.SessionOptions()
-        sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL
-        sess_options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
-        sess_options.intra_op_num_threads = 2
-
-        onnx_path = _find_first_existing_file(
-            os.path.join(self.model_dir, "g2pW.onnx"),
-            os.path.join(self.model_dir, "g2pw.onnx"),
-        )
-
-        if "CUDAExecutionProvider" in onnxruntime.get_available_providers():
-            self.session_g2pw = onnxruntime.InferenceSession(
-                onnx_path,
-                sess_options=sess_options,
-                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-            )
-        else:
-            self.session_g2pw = onnxruntime.InferenceSession(
-                onnx_path,
-                sess_options=sess_options,
-                providers=["CPUExecutionProvider"],
-            )
-
-    def _predict(self, model_input: Dict[str, Any]) -> Tuple[List[str], List[float]]:
-        return predict(session=self.session_g2pw, onnx_input=model_input, labels=self.labels)

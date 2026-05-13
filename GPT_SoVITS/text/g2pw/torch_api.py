@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.ao.quantization as ao_quant
 
-from .onnx_api import _G2PWBaseOnnxConverter, _find_first_existing_file
+from .base_api import _G2PWBaseConverter, _find_first_existing_file
 
 warnings.filterwarnings("ignore")
 
@@ -433,7 +433,7 @@ def _load_g2pw_int8_model(int8_path: str) -> G2PWModel:
     return model
 
 
-class G2PWTorchConverter(_G2PWBaseOnnxConverter):
+class G2PWTorchConverter(_G2PWBaseConverter):
     def __init__(
         self,
         model_dir: str = "G2PWModel/",

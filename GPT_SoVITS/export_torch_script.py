@@ -4,14 +4,15 @@ import argparse
 from io import BytesIO
 from typing import Optional
 from my_utils import load_audio
+import math
 import torch
-import torchaudio
+from tools.audio_utils import write_audio_file
 
 from torch import IntTensor, LongTensor, Tensor, nn
 from torch.nn import functional as F
 
-from transformers import AutoModelForMaskedLM, AutoTokenizer
 from feature_extractor import cnhubert
+from text import chinese_bert
 
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
 from module.models import SynthesizerTrn
@@ -22,7 +23,6 @@ from sv import SV
 import kaldi as Kaldi
 
 import os
-import soundfile
 
 default_config = {
     "embedding_dim": 512,
@@ -599,8 +599,61 @@ class ExportSSLModel(torch.nn.Module):
         return audio
 
 
+@torch.jit.script
+def _get_sinc_resample_kernel(
+    orig_freq: int,
+    new_freq: int,
+    gcd: int,
+    lowpass_filter_width: int = 6,
+    rolloff: float = 0.99,
+) -> tuple[torch.Tensor, int]:
+    orig_freq = int(orig_freq) // gcd
+    new_freq = int(new_freq) // gcd
+
+    if lowpass_filter_width <= 0:
+        raise ValueError("Low pass filter width should be positive.")
+
+    base_freq = float(min(orig_freq, new_freq)) * rolloff
+    width = int(math.ceil(lowpass_filter_width * orig_freq / base_freq))
+    idx = torch.arange(-width, width + orig_freq, dtype=torch.float32)[None, None] / float(orig_freq)
+    t = torch.arange(0, -new_freq, -1, dtype=torch.float32)[:, None, None] / float(new_freq) + idx
+    t = t * base_freq
+    t = t.clamp(-lowpass_filter_width, lowpass_filter_width)
+
+    window = torch.cos(t * math.pi / lowpass_filter_width / 2.0) ** 2
+    t = t * math.pi
+    scale = base_freq / float(orig_freq)
+    one = torch.tensor(1.0, dtype=t.dtype, device=t.device)
+    kernels = torch.where(t == 0, one, torch.sin(t) / t)
+    kernels = kernels * window * scale
+    return kernels, width
+
+
+@torch.jit.script
+def _apply_sinc_resample_kernel(
+    waveform: torch.Tensor,
+    orig_freq: int,
+    new_freq: int,
+    gcd: int,
+    kernel: torch.Tensor,
+    width: int,
+) -> torch.Tensor:
+    orig_freq = int(orig_freq) // gcd
+    new_freq = int(new_freq) // gcd
+
+    shape = waveform.size()
+    waveform = waveform.view(-1, shape[-1])
+    length = int(waveform.shape[1])
+    waveform = F.pad(waveform, (width, width + orig_freq))
+    resampled = F.conv1d(waveform[:, None], kernel, stride=orig_freq)
+    resampled = resampled.transpose(1, 2).reshape(waveform.shape[0], -1)
+    target_length = int(math.ceil(float(new_freq) * float(length) / float(orig_freq)))
+    resampled = resampled[..., :target_length]
+    return resampled.view(shape[:-1] + resampled.shape[-1:])
+
+
 def export_bert(output_path):
-    tokenizer = AutoTokenizer.from_pretrained(bert_path)
+    tokenizer = chinese_bert.load_tokenizer(bert_path)
 
     text = "叹息声一声接着一声传出,木兰对着房门织布.听不见织布机织布的声音,只听见木兰在叹息.问木兰在想什么?问木兰在惦记什么?木兰答道,我也没有在想什么,也没有在惦记什么."
     ref_bert_inputs = tokenizer(text, return_tensors="pt")
@@ -612,7 +665,7 @@ def export_bert(output_path):
             word2ph.append(2)
     ref_bert_inputs["word2ph"] = torch.Tensor(word2ph).int()
 
-    bert_model = AutoModelForMaskedLM.from_pretrained(bert_path, output_hidden_states=True, torchscript=True)
+    bert_model = chinese_bert.load_model(bert_path).eval()
     my_bert_model = MyBertModel(bert_model)
 
     ref_bert_inputs = {
@@ -821,19 +874,26 @@ def export_prov2(
         print("#### exported gpt_sovits ####")
         audio = gpt_sovits_export(ssl_content, ref_audio_sr, ref_seq, text_seq, ref_bert, text_bert, top_k)
         print("start write wav")
-        soundfile.write("out.wav", audio.float().detach().cpu().numpy(), 32000)
+        write_audio_file("out.wav", audio.float().detach().cpu().numpy(), 32000)
 
 
 @torch.jit.script
 def parse_audio(ref_audio):
-    ref_audio_16k = torchaudio.functional.resample(ref_audio, 48000, 16000).float()  # .to(ref_audio.device)
-    ref_audio_sr = torchaudio.functional.resample(ref_audio, 48000, 32000).float()  # .to(ref_audio.device)
+    ref_audio_16k = resamplex(ref_audio, 48000, 16000).float()
+    ref_audio_sr = resamplex(ref_audio, 48000, 32000).float()
     return ref_audio_16k, ref_audio_sr
 
 
 @torch.jit.script
 def resamplex(ref_audio: torch.Tensor, src_sr: int, dst_sr: int) -> torch.Tensor:
-    return torchaudio.functional.resample(ref_audio, src_sr, dst_sr).float()
+    if src_sr <= 0 or dst_sr <= 0:
+        raise ValueError("Original frequency and desired frequecy should be positive")
+    if src_sr == dst_sr:
+        return ref_audio.float()
+    gcd = math.gcd(int(src_sr), int(dst_sr))
+    kernel, width = _get_sinc_resample_kernel(src_sr, dst_sr, gcd)
+    kernel = kernel.to(device=ref_audio.device, dtype=ref_audio.dtype)
+    return _apply_sinc_resample_kernel(ref_audio.float(), src_sr, dst_sr, gcd, kernel, width).float()
 
 
 class GPT_SoVITS(nn.Module):
@@ -937,8 +997,8 @@ def test():
     ref_audio_path = args.ref_audio
     ref_text = args.ref_text
 
-    tokenizer = AutoTokenizer.from_pretrained(bert_path)
-    # bert_model = AutoModelForMaskedLM.from_pretrained(bert_path,output_hidden_states=True,torchscript=True)
+    tokenizer = chinese_bert.load_tokenizer(bert_path)
+    # bert_model loading now uses the local chinese_bert module.
     # bert = MyBertModel(bert_model)
     my_bert = torch.jit.load("onnx/bert_model.pt", map_location="cuda")
 
@@ -1018,7 +1078,7 @@ def test():
     with torch.no_grad():
         audio = gpt_sovits(ssl_content, ref_audio_sr, ref_seq, text_seq, ref_bert, test_bert, top_k)
     print("start write wav")
-    soundfile.write("out.wav", audio.detach().cpu().numpy(), 32000)
+    write_audio_file("out.wav", audio.detach().cpu().numpy(), 32000)
 
 
 import text

@@ -1,14 +1,11 @@
 import os
 import re
 
-import cn2an
 from pypinyin import lazy_pinyin, Style
 
 from text.symbols import punctuation
 from text.tone_sandhi import ToneSandhi
 from text.zh_normalization.text_normlization import TextNormalizer
-
-normalizer = lambda x: cn2an.transform(x, "an2cn")
 
 current_file_path = os.path.dirname(__file__)
 pinyin_to_symbol_map = {

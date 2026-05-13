@@ -13,9 +13,9 @@ import re
 import torch
 from text.LangSegmenter import LangSegmenter
 from text import chinese
+from text import chinese_bert
 from text.cleaner import clean_text, clean_text_with_phone_units
 from text import cleaned_text_to_sequence
-from transformers import AutoModelForMaskedLM, AutoTokenizer
 from TTS_infer_pack.text_segmentation_method import split_big_text, splits, get_method as get_seg_method
 
 from tools.i18n.i18n import I18nAuto, scan_language_list
@@ -51,7 +51,7 @@ def merge_short_text_in_array(texts: str, threshold: int) -> list:
 
 
 class TextPreprocessor:
-    def __init__(self, bert_model: AutoModelForMaskedLM, tokenizer: AutoTokenizer, device: torch.device):
+    def __init__(self, bert_model, tokenizer, device: torch.device):
         self.bert_model = bert_model
         self.tokenizer = tokenizer
         self.device = device
@@ -326,36 +326,22 @@ class TextPreprocessor:
             return phones, bert, norm_text, phone_units_list or None
 
     def get_bert_feature(self, text: str, word2ph: list) -> torch.Tensor:
-        with torch.no_grad():
-            inputs = self.tokenizer(text, return_tensors="pt")
-            for i in inputs:
-                inputs[i] = inputs[i].to(self.device)
-            res = self.bert_model(**inputs, output_hidden_states=True)
-            res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
-        assert len(word2ph) == len(text)
-        phone_level_feature = []
-        for i in range(len(word2ph)):
-            repeat_feature = res[i].repeat(word2ph[i], 1)
-            phone_level_feature.append(repeat_feature)
-        phone_level_feature = torch.cat(phone_level_feature, dim=0)
-        return phone_level_feature.T
+        return chinese_bert.get_bert_feature(
+            self.bert_model,
+            self.tokenizer,
+            text,
+            word2ph,
+            self.device,
+        )
 
     def get_bert_feature_batch(self, texts: List[str], word2ph_list: List[list]) -> List[torch.Tensor]:
-        with torch.no_grad():
-            inputs = self.tokenizer(texts, return_tensors="pt", padding=True)
-            for key in inputs:
-                inputs[key] = inputs[key].to(self.device)
-            res = self.bert_model(**inputs, output_hidden_states=True)
-            hidden = torch.cat(res["hidden_states"][-3:-2], -1).cpu()
-
-        feature_list = []
-        for idx, (text, word2ph) in enumerate(zip(texts, word2ph_list)):
-            assert len(word2ph) == len(text)
-            char_feature = hidden[idx][1 : 1 + len(text)]
-            repeat_counts = torch.tensor(word2ph, dtype=torch.long)
-            phone_level_feature = torch.repeat_interleave(char_feature, repeat_counts, dim=0)
-            feature_list.append(phone_level_feature.T)
-        return feature_list
+        return chinese_bert.get_bert_feature_batch(
+            self.bert_model,
+            self.tokenizer,
+            texts,
+            word2ph_list,
+            self.device,
+        )
 
     def clean_text_inf(self, text: str, language: str, version: str = "v2"):
         language = language.replace("all_", "")

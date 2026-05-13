@@ -7,7 +7,7 @@ import torch
 from torch import LongTensor, Tensor, nn
 from torch.nn import functional as F
 
-import soundfile
+from tools.audio_utils import write_audio_file
 from inference_webui import get_phones_and_bert
 import matplotlib.pyplot as plt
 
@@ -402,16 +402,16 @@ def test_stream(
 
     for (i,a) in enumerate(audios):
         print(f'write {output_path}/out_{i}')
-        soundfile.write(f"{output_path}/out_{i}.wav", a.float().detach().cpu().numpy(), 32000)
+        write_audio_file(f"{output_path}/out_{i}.wav", a.float().detach().cpu().numpy(), 32000)
         
     print(f"frist token: {et - st:.4f} seconds")
     print(f"all token: {at - st:.4f} seconds")
     audio = vits.vq_model(y[:,-idx:].unsqueeze(0), text_seq, refer, speed=1.0, sv_emb=sv_emb)[0, 0]
-    soundfile.write(f"{output_path}/out_final.wav", audio.float().detach().cpu().numpy(), 32000)
+    write_audio_file(f"{output_path}/out_final.wav", audio.float().detach().cpu().numpy(), 32000)
     audio = torch.cat(audios, dim=0)
-    soundfile.write(f"{output_path}/out.wav", audio.float().detach().cpu().numpy(), 32000)
+    write_audio_file(f"{output_path}/out.wav", audio.float().detach().cpu().numpy(), 32000)
     audio_raw = torch.cat(raw_audios, dim=0)
-    soundfile.write(f"{output_path}/out.raw.wav", audio_raw.float().detach().cpu().numpy(), 32000)
+    write_audio_file(f"{output_path}/out.raw.wav", audio_raw.float().detach().cpu().numpy(), 32000)
     
 
     colors = ['red', 'green', 'blue', 'orange', 'purple', 'cyan', 'magenta', 'yellow']
@@ -547,7 +547,7 @@ def export_prov2(
     y = y[:,-idx:].unsqueeze(0)
     print("y", y.shape)
     audio = vits(y, text_seq, refer, sv_emb)
-    soundfile.write(f"{output_path}/out_final.wav", audio.float().detach().cpu().numpy(), 32000)
+    write_audio_file(f"{output_path}/out_final.wav", audio.float().detach().cpu().numpy(), 32000)
 
     torch._dynamo.mark_dynamic(ssl_content, 2)
     torch._dynamo.mark_dynamic(ref_audio_sr, 1)

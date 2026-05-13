@@ -9,7 +9,6 @@ import time
 import traceback
 from copy import deepcopy
 
-import torchaudio
 from tqdm import tqdm
 
 now_dir = os.getcwd()
@@ -17,9 +16,7 @@ sys.path.append(now_dir)
 import os
 from typing import List, Tuple, Union
 
-import ffmpeg
 import gc
-import librosa
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -29,9 +26,9 @@ from feature_extractor.cnhubert import CNHubert
 from module.mel_processing import mel_spectrogram_torch, spectrogram_torch
 from module.models import SynthesizerTrn
 from process_ckpt import get_sovits_version_from_path_fast, load_sovits_new
-from transformers import AutoModelForMaskedLM, AutoTokenizer
+from text.chinese_bert import load_model as load_chinese_bert_model, load_tokenizer as load_chinese_bert_tokenizer
 
-from tools.audio_utils import load_audio_tensor
+from tools.audio_utils import change_speed_int16, load_audio_mono, load_audio_tensor, resample_audio_tensor
 from tools.i18n.i18n import I18nAuto, scan_language_list
 from TTS_infer_pack.pause_splitter import maybe_secondary_split_preprocess_items
 from TTS_infer_pack.text_segmentation_method import splits
@@ -120,11 +117,7 @@ def rss_bytes_to_mb(rss_bytes: int) -> float:
 
 
 def resample(audio_tensor, sr0, sr1, device):
-    global resample_transform_dict
-    key = "%s-%s-%s" % (sr0, sr1, str(device))
-    if key not in resample_transform_dict:
-        resample_transform_dict[key] = torchaudio.transforms.Resample(sr0, sr1).to(device)
-    return resample_transform_dict[key](audio_tensor)
+    return resample_audio_tensor(audio_tensor.to(device), sr0, sr1)
 
 
 language = os.environ.get("language", "Auto")
@@ -148,24 +141,7 @@ mel_fn = lambda x: mel_spectrogram_torch(
 
 
 def speed_change(input_audio: np.ndarray, speed: float, sr: int):
-    # 将 NumPy 数组转换为原始 PCM 流
-    raw_audio = input_audio.astype(np.int16).tobytes()
-
-    # 设置 ffmpeg 输入流
-    input_stream = ffmpeg.input("pipe:", format="s16le", acodec="pcm_s16le", ar=str(sr), ac=1)
-
-    # 变速处理
-    output_stream = input_stream.filter("atempo", speed)
-
-    # 输出流到管道
-    out, _ = output_stream.output("pipe:", format="s16le", acodec="pcm_s16le").run(
-        input=raw_audio, capture_stdout=True, capture_stderr=True
-    )
-
-    # 将管道输出解码为 NumPy 数组
-    processed_audio = np.frombuffer(out, np.int16)
-
-    return processed_audio
+    return change_speed_int16(input_audio, speed=speed, sample_rate=sr)
 
 
 class DictToAttrRecursive(dict):
@@ -443,8 +419,8 @@ class TTS:
 
         self.t2s_model: Text2SemanticLightningModule = None
         self.vits_model: SynthesizerTrn = None
-        self.bert_tokenizer: AutoTokenizer = None
-        self.bert_model: AutoModelForMaskedLM = None
+        self.bert_tokenizer = None
+        self.bert_model = None
         self.cnhuhbert_model: CNHubert = None
         self.sv_model = None
 
@@ -496,8 +472,8 @@ class TTS:
 
     def init_bert_weights(self, base_path: str):
         print(f"Loading BERT weights from {base_path}")
-        self.bert_tokenizer = AutoTokenizer.from_pretrained(base_path)
-        self.bert_model = AutoModelForMaskedLM.from_pretrained(base_path)
+        self.bert_tokenizer = load_chinese_bert_tokenizer(base_path)
+        self.bert_model = load_chinese_bert_model(base_path)
         self.bert_model = self.bert_model.eval()
         self.bert_model = self.bert_model.to(self.configs.device)
         if self.configs.is_half and str(self.configs.device) != "cpu":
@@ -780,7 +756,7 @@ class TTS:
             dtype=np.float16 if self.configs.is_half else np.float32,
         )
         with torch.no_grad():
-            wav16k, sr = librosa.load(ref_wav_path, sr=16000)
+            wav16k = load_audio_mono(ref_wav_path, sample_rate=16000)
             if wav16k.shape[0] > 160000 or wav16k.shape[0] < 48000:
                 raise OSError(i18n("参考音频在3~10秒范围外，请更换！"))
             wav16k = torch.from_numpy(wav16k)

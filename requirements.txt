@@ -1,24 +1,18 @@
 --no-binary=opencc
 numpy<2.0
 scipy
-librosa==0.10.2
-numba
+av
 gradio<5
-ffmpeg-python
-onnxruntime
+huggingface_hub<1.0
 tqdm
-cn2an
 pypinyin
 pyopenjtalk>=0.4.1
 g2p_en
-torchaudio
-transformers>=4.43,<=4.50
-peft<0.18.0
-chardet
+tokenizers
+einops
 PyYAML
 psutil
 jieba_fast
-jieba
 split-lang
 fast_langdetect>=0.3.1
 wordsegment
@@ -29,6 +23,4 @@ opencc
 python_mecab_ko; sys_platform != 'win32'
 fastapi[standard]>=0.115.2
 starlette<1.0
-torchmetrics<=1.5
 pydantic<=2.10.6
-soundfile

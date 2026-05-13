@@ -350,7 +350,13 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
             with gr.Column():
                 with gr.Row():
                     batch_size = gr.Slider(
-                        minimum=1, maximum=200, step=1, label=i18n("batch_size"), value=20, interactive=True
+                        minimum=1,
+                        maximum=5,
+                        step=1,
+                        label=i18n("GPT批大小"),
+                        info=i18n("仅影响GPT/T2S批量语义生成，VITS不并行"),
+                        value=2,
+                        interactive=True,
                     )
                 with gr.Row():
                     fragment_interval = gr.Slider(
@@ -388,7 +394,13 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                     )
 
                 with gr.Row():
-                    parallel_infer = gr.Checkbox(label=i18n("并行推理"), value=True, interactive=True, show_label=True)
+                    parallel_infer = gr.Checkbox(
+                        label=i18n("GPT并行推理"),
+                        info=i18n("仅影响GPT/T2S语义生成阶段"),
+                        value=True,
+                        interactive=True,
+                        show_label=True,
+                    )
                     split_bucket = gr.Checkbox(
                         label=i18n("数据分桶(并行推理时会降低一点计算量)"),
                         value=True,

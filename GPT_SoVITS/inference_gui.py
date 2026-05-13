@@ -3,9 +3,9 @@ import sys
 from PyQt5.QtCore import QEvent
 from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QLineEdit, QPushButton, QTextEdit
 from PyQt5.QtWidgets import QGridLayout, QVBoxLayout, QWidget, QFileDialog, QStatusBar, QComboBox
-import soundfile as sf
 
 from tools.i18n.i18n import I18nAuto
+from tools.audio_utils import write_audio_file
 
 i18n = I18nAuto()
 
@@ -301,7 +301,7 @@ class GPTSoVITSGUI(QMainWindow):
         if result_list:
             last_sampling_rate, last_audio_data = result_list[-1]
             output_wav_path = os.path.join(output_path, "output.wav")
-            sf.write(output_wav_path, last_audio_data, last_sampling_rate)
+            write_audio_file(output_wav_path, last_audio_data, last_sampling_rate)
 
             result = "Audio saved to " + output_wav_path
 

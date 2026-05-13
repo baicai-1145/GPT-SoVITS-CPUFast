@@ -7,9 +7,9 @@ import subprocess
 import sys
 import traceback
 
-import librosa
 import numpy as np
 import torch
+from tools.audio_utils import load_audio_tensor
 
 logging.getLogger("numba").setLevel(logging.ERROR)
 logging.getLogger("matplotlib").setLevel(logging.ERROR)
@@ -176,8 +176,10 @@ def plot_alignment_to_numpy(alignment, info=None):
 
 
 def load_wav_to_torch(full_path):
-    data, sampling_rate = librosa.load(full_path, sr=None)
-    return torch.FloatTensor(data), sampling_rate
+    data, sampling_rate = load_audio_tensor(full_path)
+    if data.dim() > 1:
+        data = data.mean(0)
+    return data.float(), sampling_rate
 
 
 def load_filepaths_and_text(filename, split="|"):

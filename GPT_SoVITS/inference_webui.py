@@ -38,7 +38,6 @@ import warnings
 import gc
 
 import torch
-import torchaudio
 from text.LangSegmenter import LangSegmenter
 
 logging.getLogger("markdown_it").setLevel(logging.ERROR)
@@ -47,7 +46,6 @@ logging.getLogger("httpcore").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
 logging.getLogger("asyncio").setLevel(logging.ERROR)
 logging.getLogger("charset_normalizer").setLevel(logging.ERROR)
-logging.getLogger("torchaudio._extension").setLevel(logging.ERROR)
 logging.getLogger("multipart.multipart").setLevel(logging.ERROR)
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -94,11 +92,10 @@ is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
 # is_half=False
 punctuation = set(["!", "?", "…", ",", ".", "-", " "])
 import gradio as gr
-import librosa
 import numpy as np
 from feature_extractor import cnhubert
-from transformers import AutoModelForMaskedLM, AutoTokenizer
-from tools.audio_utils import load_audio_tensor
+from text import chinese_bert
+from tools.audio_utils import load_audio_mono, load_audio_tensor, resample_audio_tensor
 
 cnhubert.cnhubert_base_path = cnhubert_base_path
 
@@ -163,8 +160,8 @@ dict_language_v2 = {
 }
 dict_language = dict_language_v1 if version == "v1" else dict_language_v2
 
-tokenizer = AutoTokenizer.from_pretrained(bert_path)
-bert_model = AutoModelForMaskedLM.from_pretrained(bert_path)
+tokenizer = chinese_bert.load_tokenizer(bert_path)
+bert_model = chinese_bert.load_model(bert_path)
 if is_half == True:
     bert_model = bert_model.half().to(device)
 else:
@@ -172,19 +169,7 @@ else:
 
 
 def get_bert_feature(text, word2ph):
-    with torch.no_grad():
-        inputs = tokenizer(text, return_tensors="pt")
-        for i in inputs:
-            inputs[i] = inputs[i].to(device)
-        res = bert_model(**inputs, output_hidden_states=True)
-        res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
-    assert len(word2ph) == len(text)
-    phone_level_feature = []
-    for i in range(len(word2ph)):
-        repeat_feature = res[i].repeat(word2ph[i], 1)
-        phone_level_feature.append(repeat_feature)
-    phone_level_feature = torch.cat(phone_level_feature, dim=0)
-    return phone_level_feature.T
+    return chinese_bert.get_bert_feature(bert_model, tokenizer, text, word2ph, device)
 
 
 class DictToAttrRecursive(dict):
@@ -387,11 +372,7 @@ resample_transform_dict = {}
 
 
 def resample(audio_tensor, sr0, sr1, device):
-    global resample_transform_dict
-    key = "%s-%s-%s" % (sr0, sr1, str(device))
-    if key not in resample_transform_dict:
-        resample_transform_dict[key] = torchaudio.transforms.Resample(sr0, sr1).to(device)
-    return resample_transform_dict[key](audio_tensor)
+    return resample_audio_tensor(audio_tensor.to(device), sr0, sr1)
 
 
 def get_spepc(hps, filename, dtype, device, is_v2pro=False):
@@ -628,7 +609,7 @@ def get_tts_wav(
         zero_wav_torch = zero_wav_torch.to(device)
     if not ref_free:
         with torch.no_grad():
-            wav16k, sr = librosa.load(ref_wav_path, sr=16000)
+            wav16k = load_audio_mono(ref_wav_path, sample_rate=16000)
             if wav16k.shape[0] > 160000 or wav16k.shape[0] < 48000:
                 gr.Warning(i18n("参考音频在3~10秒范围外，请更换！"))
                 raise OSError(i18n("参考音频在3~10秒范围外，请更换！"))
@@ -848,7 +829,7 @@ def cut5(inp):
 
 def custom_sort_key(s):
     # 使用正则表达式提取字符串中的数字部分和非数字部分
-    parts = re.split("(\d+)", s)
+    parts = re.split(r"(\d+)", s)
     # 将数字部分转换为整数，非数字部分保持不变
     parts = [int(part) if part.isdigit() else part for part in parts]
     return parts
