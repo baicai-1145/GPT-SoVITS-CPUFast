@@ -156,6 +156,41 @@ function Download-RepoFileIfMissing {
     Write-Success "Downloaded $RelativePath"
 }
 
+function Download-G2PWFileIfMissing {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FileName,
+
+        [Parameter()]
+        [string]$UrlPrefix = $G2PWFileUrlPrefix
+    )
+
+    $localPath = Join-Path "GPT_SoVITS/text/G2PWModel" $FileName
+    $remoteUrl = "$UrlPrefix/$FileName"
+
+    if (Test-Path $localPath -PathType Leaf) {
+        Write-Info "File Exists: $localPath"
+        return
+    }
+
+    $parent = Split-Path -Parent $localPath
+    if (-not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    Write-Info "Downloading G2PWModel/$FileName..."
+    Invoke-Download -Uri $remoteUrl -OutFile $localPath
+    Write-Success "Downloaded G2PWModel/$FileName"
+}
+
+function Download-G2PWFiles {
+    Download-G2PWFileIfMissing "MONOPHONIC_CHARS.txt"
+    Download-G2PWFileIfMissing "POLYPHONIC_CHARS.txt"
+    Download-G2PWFileIfMissing "config.py"
+    Download-G2PWFileIfMissing "g2pw.pth"
+    Download-G2PWFileIfMissing "record.log"
+}
+
 function Download-SharedInferenceFiles {
     Download-RepoFileIfMissing "pretrained_models/chinese-hubert-base/config.json"
     Download-RepoFileIfMissing "pretrained_models/chinese-hubert-base/preprocessor_config.json"
@@ -214,7 +249,7 @@ Invoke-Conda  ffmpeg cmake
 Write-Success "FFmpeg & CMake Installed"
 
 $RepoFileUrlPrefix = ""
-$G2PWURL          = ""
+$G2PWFileUrlPrefix = ""
 $NLTKURL          = ""
 $OpenJTalkURL     = ""
 
@@ -222,21 +257,21 @@ switch ($Source) {
     "HF" {
         Write-Info "Download Model From HuggingFace"
         $RepoFileUrlPrefix = "https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main"
-        $G2PWURL           = "https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/G2PWModel.zip"
+        $G2PWFileUrlPrefix = "https://huggingface.co/baicai1145/g2pw/resolve/main"
         $NLTKURL           = "https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/nltk_data.zip"
         $OpenJTalkURL      = "https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/open_jtalk_dic_utf_8-1.11.tar.gz"
     }
     "HF-Mirror" {
         Write-Info "Download Model From HuggingFace-Mirror"
         $RepoFileUrlPrefix = "https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main"
-        $G2PWURL           = "https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/G2PWModel.zip"
+        $G2PWFileUrlPrefix = "https://hf-mirror.com/baicai1145/g2pw/resolve/main"
         $NLTKURL           = "https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/nltk_data.zip"
         $OpenJTalkURL      = "https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/open_jtalk_dic_utf_8-1.11.tar.gz"
     }
     "ModelScope" {
         Write-Info "Download Model From ModelScope"
         $RepoFileUrlPrefix = "https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master"
-        $G2PWURL           = "https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/G2PWModel.zip"
+        $G2PWFileUrlPrefix = "https://www.modelscope.cn/models/baicai1145/g2pw/resolve/master"
         $NLTKURL           = "https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/nltk_data.zip"
         $OpenJTalkURL      = "https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/open_jtalk_dic_utf_8-1.11.tar.gz"
     }
@@ -248,15 +283,9 @@ Write-Info "Downloading Version-Specific Inference Weights For $Version..."
 Download-VersionFiles $Version
 Write-Success "Inference Pretrained Files Downloaded"
 
-if (-not (Test-Path "GPT_SoVITS/text/G2PWModel")) {
-    Write-Info "Downloading G2PWModel..."
-    Invoke-Download -Uri $G2PWURL -OutFile "G2PWModel.zip"
-    Invoke-Unzip "G2PWModel.zip" "GPT_SoVITS/text"
-    Write-Success "G2PWModel Downloaded"
-} else {
-    Write-Info "G2PWModel Exists"
-    Write-Info "Skip Downloading G2PWModel"
-}
+Write-Info "Downloading G2PWModel Files..."
+Download-G2PWFiles
+Write-Success "G2PWModel Files Downloaded"
 
 Write-Info "Installing PyTorch For CPU..."
 Invoke-Pip torch --index-url "https://download.pytorch.org/whl/cpu"

@@ -23,8 +23,7 @@ The remaining goal is straightforward: run GPT-SoVITS inference on CPU with less
 ## What Still Works
 
 - `webui.py`: minimal inference launcher
-- `GPT_SoVITS/inference_webui.py`: standard inference WebUI
-- `GPT_SoVITS/inference_webui_fast.py`: batched / fast inference WebUI
+- `GPT_SoVITS/inference_webui_fast.py`: high-performance CPU inference WebUI
 - `api.py` and `api_v2.py`: inference APIs
 
 ## Quick Start
@@ -68,13 +67,7 @@ Recommended:
 python webui.py
 ```
 
-Direct inference WebUI:
-
-```bash
-python GPT_SoVITS/inference_webui.py
-```
-
-Fast inference WebUI:
+Direct high-performance inference WebUI:
 
 ```bash
 python GPT_SoVITS/inference_webui_fast.py
@@ -116,6 +109,7 @@ Chinese shows an even larger end-to-end gain than the overall average because it
 - ONNX / ORT was not kept in the main inference path. `dec-only ORT`, `flow + dec ORT`, and larger graph-level ORT experiments were all tried, but on the current machine and dependency stack they did not produce a solution that was simultaneously quality-safe, faster, and lighter than the PyTorch path, so the runtime stayed on pure PyTorch.
 - The Chinese path was not simplified by dropping quality-critical frontend pieces. `g2pw` stayed, Chinese BERT stayed, and the project did not switch to lighter but lower-quality replacements such as `g2pm`, which are more likely to cause noticeable G2P errors on harder text, especially literary or classical material.
 - The main path also does not rely on secondary splitting just to manufacture larger batches. That direction was explored in benchmark-only form, but the results did not stay stable, and the `repeats=3` verification did not justify moving it into the runtime path.
+- VITS parallel synthesis is not exposed in the CPU WebUI. Local CPU measurements showed it can add overhead and slow inference, so the high-performance WebUI keeps VITS synthesis serial while preserving T2S parallel inference.
 
 ### Preprocessing / Frontend
 

@@ -217,19 +217,19 @@ echo -e "${SUCCESS}unzip Installed"
 if [ "$USE_HF" = "true" ]; then
     echo -e "${INFO}Download Model From HuggingFace"
     REPO_FILE_URL_PREFIX="https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main"
-    G2PW_URL="https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/G2PWModel.zip"
+    G2PW_FILE_URL_PREFIX="https://huggingface.co/baicai1145/g2pw/resolve/main"
     NLTK_URL="https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/nltk_data.zip"
     PYOPENJTALK_URL="https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/open_jtalk_dic_utf_8-1.11.tar.gz"
 elif [ "$USE_HF_MIRROR" = "true" ]; then
     echo -e "${INFO}Download Model From HuggingFace-Mirror"
     REPO_FILE_URL_PREFIX="https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main"
-    G2PW_URL="https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/G2PWModel.zip"
+    G2PW_FILE_URL_PREFIX="https://hf-mirror.com/baicai1145/g2pw/resolve/main"
     NLTK_URL="https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/nltk_data.zip"
     PYOPENJTALK_URL="https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/open_jtalk_dic_utf_8-1.11.tar.gz"
 elif [ "$USE_MODELSCOPE" = "true" ]; then
     echo -e "${INFO}Download Model From ModelScope"
     REPO_FILE_URL_PREFIX="https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master"
-    G2PW_URL="https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/G2PWModel.zip"
+    G2PW_FILE_URL_PREFIX="https://www.modelscope.cn/models/baicai1145/g2pw/resolve/master"
     NLTK_URL="https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/nltk_data.zip"
     PYOPENJTALK_URL="https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/open_jtalk_dic_utf_8-1.11.tar.gz"
 fi
@@ -248,6 +248,31 @@ download_repo_file_if_missing() {
     echo -e "${INFO}Downloading ${relative_path}..."
     run_wget_quiet "$remote_url" -O "$local_path"
     echo -e "${SUCCESS}Downloaded ${relative_path}"
+}
+
+download_g2pw_file_if_missing() {
+    local filename="$1"
+    local url_prefix="${2:-$G2PW_FILE_URL_PREFIX}"
+    local local_path="GPT_SoVITS/text/G2PWModel/${filename}"
+    local remote_url="${url_prefix}/${filename}"
+
+    if [ -f "$local_path" ]; then
+        echo -e "${INFO}File Exists: ${local_path}"
+        return
+    fi
+
+    mkdir -p "$(dirname "$local_path")"
+    echo -e "${INFO}Downloading G2PWModel/${filename}..."
+    run_wget_quiet "$remote_url" -O "$local_path"
+    echo -e "${SUCCESS}Downloaded G2PWModel/${filename}"
+}
+
+download_g2pw_files() {
+    download_g2pw_file_if_missing "MONOPHONIC_CHARS.txt"
+    download_g2pw_file_if_missing "POLYPHONIC_CHARS.txt"
+    download_g2pw_file_if_missing "config.py"
+    download_g2pw_file_if_missing "g2pw.pth"
+    download_g2pw_file_if_missing "record.log"
 }
 
 download_shared_inference_files() {
@@ -302,18 +327,9 @@ echo -e "${INFO}Downloading Version-Specific Inference Weights For ${MODEL_VERSI
 download_version_files "$MODEL_VERSION"
 echo -e "${SUCCESS}Inference Pretrained Files Downloaded"
 
-if [ ! -d "GPT_SoVITS/text/G2PWModel" ]; then
-    echo -e "${INFO}Downloading G2PWModel.."
-    rm -rf G2PWModel.zip
-    run_wget_quiet "$G2PW_URL"
-
-    unzip -q -o G2PWModel.zip -d GPT_SoVITS/text
-    rm -rf G2PWModel.zip
-    echo -e "${SUCCESS}G2PWModel Downloaded"
-else
-    echo -e "${INFO}G2PWModel Exists"
-    echo -e "${INFO}Skip Downloading G2PWModel"
-fi
+echo -e "${INFO}Downloading G2PWModel Files..."
+download_g2pw_files
+echo -e "${SUCCESS}G2PWModel Files Downloaded"
 
 if [ "$WORKFLOW" = false ]; then
     echo -e "${INFO}Installing PyTorch For CPU..."

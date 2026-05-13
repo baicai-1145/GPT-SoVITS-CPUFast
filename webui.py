@@ -59,7 +59,7 @@ def refresh_choices():
     return sovits_update, gpt_update
 
 
-def toggle_inference(bert_model_path, cnhubert_model_path, gpu_number, gpt_path, sovits_path, batched_infer_enabled):
+def toggle_inference(bert_model_path, cnhubert_model_path, gpu_number, gpt_path, sovits_path):
     global _tts_process
     if _tts_process is not None:
         _kill_process_tree(_tts_process)
@@ -70,10 +70,16 @@ def toggle_inference(bert_model_path, cnhubert_model_path, gpu_number, gpt_path,
             gr.update(visible=False),
         )
 
-    backend = "GPT_SoVITS/inference_webui_fast.py" if batched_infer_enabled else "GPT_SoVITS/inference_webui.py"
+    backend = "GPT_SoVITS/inference_webui_fast.py"
     env = os.environ.copy()
-    env["gpt_path"] = gpt_path
-    env["sovits_path"] = sovits_path
+    if gpt_path:
+        env["gpt_path"] = gpt_path
+    else:
+        env.pop("gpt_path", None)
+    if sovits_path:
+        env["sovits_path"] = sovits_path
+    else:
+        env.pop("sovits_path", None)
     env["cnhubert_base_path"] = cnhubert_model_path
     env["bert_path"] = bert_model_path
     env["_CUDA_VISIBLE_DEVICES"] = str(gpu_number)
@@ -146,14 +152,17 @@ with gr.Blocks(title="GPT-SoVITS Inference Launcher", analytics_enabled=False, j
         cnhubert_model_path = gr.Textbox(label=i18n("CNHuBERT 模型路径"), value=default_cnhubert_path)
     with gr.Row():
         gpu_number = gr.Textbox(label=i18n("CUDA 设备号"), value=str(default_gpu))
-        batched_infer_enabled = gr.Checkbox(label=i18n("启用快速推理界面"), value=True)
 
     open_btn.click(
         toggle_inference,
-        [bert_model_path, cnhubert_model_path, gpu_number, gpt_dropdown, sovits_dropdown, batched_infer_enabled],
+        [bert_model_path, cnhubert_model_path, gpu_number, gpt_dropdown, sovits_dropdown],
         [status, open_btn, close_btn],
     )
-    close_btn.click(toggle_inference, [bert_model_path, cnhubert_model_path, gpu_number, gpt_dropdown, sovits_dropdown, batched_infer_enabled], [status, open_btn, close_btn])
+    close_btn.click(
+        toggle_inference,
+        [bert_model_path, cnhubert_model_path, gpu_number, gpt_dropdown, sovits_dropdown],
+        [status, open_btn, close_btn],
+    )
     refresh_btn.click(refresh_choices, outputs=[sovits_dropdown, gpt_dropdown])
 
 app.queue()

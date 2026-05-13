@@ -23,8 +23,7 @@
 ## 当前保留的入口
 
 - `webui.py`：最小推理启动器
-- `GPT_SoVITS/inference_webui.py`：普通推理 WebUI
-- `GPT_SoVITS/inference_webui_fast.py`：批量 / 快速推理 WebUI
+- `GPT_SoVITS/inference_webui_fast.py`：CPU 高性能推理 WebUI
 - `api.py` 与 `api_v2.py`：推理 API
 
 ## 快速开始
@@ -66,13 +65,7 @@ Windows PowerShell：
 python webui.py
 ```
 
-直接启动普通推理 WebUI：
-
-```bash
-python GPT_SoVITS/inference_webui.py
-```
-
-直接启动快速推理 WebUI：
+直接启动高性能推理 WebUI：
 
 ```bash
 python GPT_SoVITS/inference_webui_fast.py
@@ -114,6 +107,7 @@ python GPT_SoVITS/inference_webui_fast.py
 - 没有把 ONNX / ORT 接进当前主推理路径。这个方向做过 `dec-only ORT`、`flow + dec ORT`、更激进的图级 ORT 探索，但在当前机器和依赖组合下，没有拿到“完全无质量退化、同时还更快、更省”的结果，所以最终回到纯 PyTorch 主线。
 - 中文路径没有为了提速去换低质量前端。`g2pw` 还在，中文 BERT 也还在；没有为了缩短耗时，改成像 `g2pm` 这类在复杂文本、尤其古文场景里更容易出明显 G2P 问题的轻量替代，也没有直接抛弃 BERT 特征。
 - 没有把“二次切分长句、凑更大 batch”接进主路径。这个方向在 benchmark 里做过，但结论并不稳定，`repeats=3` 复验后总体还会变慢，所以没有拿来刷 README 里的主路径收益。
+- CPU WebUI 不再暴露 VITS 并行合成。实测在 CPU 上这条路径会增加调度和拼接开销，反而可能变慢，所以高性能推理界面固定使用 VITS 串行合成，同时保留 T2S 并行推理。
 
 ### 预处理 / 前端
 

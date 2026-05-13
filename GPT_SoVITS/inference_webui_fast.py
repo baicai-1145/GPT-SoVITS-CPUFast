@@ -164,7 +164,6 @@ def inference(
     seed,
     keep_random,
     parallel_infer,
-    vits_parallel_infer,
     repetition_penalty,
 ):
     seed = -1 if keep_random else seed
@@ -187,7 +186,7 @@ def inference(
         "fragment_interval": fragment_interval,
         "seed": actual_seed,
         "parallel_infer": parallel_infer,
-        "vits_parallel_infer": vits_parallel_infer,
+        "vits_parallel_infer": False,
         "repetition_penalty": repetition_penalty,
     }
     try:
@@ -390,12 +389,6 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 
                 with gr.Row():
                     parallel_infer = gr.Checkbox(label=i18n("并行推理"), value=True, interactive=True, show_label=True)
-                    vits_parallel_infer = gr.Checkbox(
-                        label=i18n("VITS并行合成"),
-                        value=True,
-                        interactive=True,
-                        show_label=True,
-                    )
                     split_bucket = gr.Checkbox(
                         label=i18n("数据分桶(并行推理时会降低一点计算量)"),
                         value=True,
@@ -433,7 +426,6 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 seed,
                 keep_random,
                 parallel_infer,
-                vits_parallel_infer,
                 repetition_penalty,
             ],
             [output, seed],
