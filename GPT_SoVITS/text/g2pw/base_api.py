@@ -13,10 +13,10 @@ from .compact_pypinyin import install as _install_compact_pypinyin
 _install_compact_pypinyin()
 
 import numpy as np
-from opencc import OpenCC
 from pypinyin import Style, pinyin
 from tokenizers import Tokenizer
 
+from ..opencc_s2tw import simplified_to_traditional_tw
 from ..zh_normalization.char_convert import tranditional_to_simplified
 from .dataset import get_char_phoneme_labels, get_phoneme_labels, prepare_onnx_input
 from .utils import load_config
@@ -220,7 +220,7 @@ class _G2PWBaseConverter:
         self.config = load_config(config_path=os.path.join(self.model_dir, "config.py"), use_default=True)
 
         self.model_source = model_source if model_source else self.config.model_source
-        self.enable_opencc = enable_non_tradional_chinese
+        self.enable_simplified_to_traditional = enable_non_tradional_chinese
         tokenizer_file = os.path.join(self.model_source, "tokenizer.json")
         self.tokenizer = _TokenizerAdapter(tokenizer_file=tokenizer_file)
         static_assets = _load_or_build_static_assets(
@@ -243,8 +243,6 @@ class _G2PWBaseConverter:
             "pinyin": self._convert_bopomofo_to_pinyin,
         }[style]
 
-        if self.enable_opencc:
-            self.cc = OpenCC("s2tw")
         self.enable_sentence_dedup = os.getenv("g2pw_sentence_dedup", "true").strip().lower() in {
             "1",
             "true",
@@ -271,10 +269,10 @@ class _G2PWBaseConverter:
         if partial_results is not None and len(partial_results) != len(sentences):
             raise ValueError("partial_results must have the same length as sentences")
 
-        if self.enable_opencc:
+        if self.enable_simplified_to_traditional:
             translated_sentences = []
             for sent in sentences:
-                translated_sent = self.cc.convert(sent)
+                translated_sent = simplified_to_traditional_tw(sent)
                 assert len(translated_sent) == len(sent)
                 translated_sentences.append(translated_sent)
             sentences = translated_sentences
