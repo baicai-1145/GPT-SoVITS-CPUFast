@@ -161,14 +161,13 @@ from feature_extractor import cnhubert
 from io import BytesIO
 from module.models import SynthesizerTrn
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
-from tools.audio_utils import load_audio_mono, load_audio_tensor, resample_audio_tensor, write_ogg_bytes, write_wav_bytes
+from tools.audio_utils import load_audio_mono, load_audio_tensor, resample_audio_tensor, write_aac_bytes, write_ogg_bytes, write_wav_bytes
 from text import cleaned_text_to_sequence
 from text import chinese_bert
 from text.cleaner import clean_text
 import config as global_config
 import logging
 import json
-import subprocess
 
 
 class DefaultRefer:
@@ -520,38 +519,8 @@ def pack_wav(audio_bytes, rate):
 
 
 def pack_aac(audio_bytes, data, rate):
-    if is_int32:
-        pcm = "s32le"
-        bit_rate = "256k"
-    else:
-        pcm = "s16le"
-        bit_rate = "128k"
-    process = subprocess.Popen(
-        [
-            "ffmpeg",
-            "-f",
-            pcm,  # 输入16位有符号小端整数PCM
-            "-ar",
-            str(rate),  # 设置采样率
-            "-ac",
-            "1",  # 单声道
-            "-i",
-            "pipe:0",  # 从管道读取输入
-            "-c:a",
-            "aac",  # 音频编码器为AAC
-            "-b:a",
-            bit_rate,  # 比特率
-            "-vn",  # 不包含视频
-            "-f",
-            "adts",  # 输出AAC数据流格式
-            "pipe:1",  # 将输出写入管道
-        ],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    out, _ = process.communicate(input=data.tobytes())
-    audio_bytes.write(out)
+    bit_rate = 256000 if is_int32 else 128000
+    audio_bytes.write(write_aac_bytes(data, rate, bit_rate=bit_rate))
 
     return audio_bytes
 

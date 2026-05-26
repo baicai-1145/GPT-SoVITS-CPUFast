@@ -1,6 +1,5 @@
 import io
 import os
-import subprocess
 import wave
 
 import av
@@ -82,36 +81,48 @@ def resample_audio_tensor(audio_tensor: torch.Tensor, src_sr: int, dst_sr: int) 
 
 
 def change_speed_int16(input_audio: np.ndarray, speed: float, sample_rate: int) -> np.ndarray:
-    raw_audio = input_audio.astype(np.int16, copy=False).tobytes()
-    process = subprocess.run(
-        [
-            "ffmpeg",
-            "-nostdin",
-            "-v",
-            "error",
-            "-f",
-            "s16le",
-            "-acodec",
-            "pcm_s16le",
-            "-ar",
-            str(sample_rate),
-            "-ac",
-            "1",
-            "-i",
-            "pipe:0",
-            "-filter:a",
-            f"atempo={speed}",
-            "-f",
-            "s16le",
-            "-acodec",
-            "pcm_s16le",
-            "pipe:1",
-        ],
-        input=raw_audio,
-        check=True,
-        capture_output=True,
-    )
-    return np.frombuffer(process.stdout, dtype=np.int16)
+    if speed <= 0:
+        raise ValueError(f"speed must be positive, got {speed}")
+
+    audio = _normalize_audio_array(input_audio).astype(np.int16, copy=False)
+    if audio.size == 0 or speed == 1.0:
+        return audio.copy()
+
+    frame = av.AudioFrame.from_ndarray(audio[np.newaxis, :], format="s16", layout="mono")
+    frame.sample_rate = int(sample_rate)
+
+    graph = av.filter.Graph()
+    src = graph.add_abuffer(sample_rate=int(sample_rate), format="s16", layout="mono", channels=1)
+    previous = src
+    remaining = float(speed)
+    factors = []
+    while remaining < 0.5:
+        factors.append(0.5)
+        remaining /= 0.5
+    while remaining > 2.0:
+        factors.append(2.0)
+        remaining /= 2.0
+    factors.append(remaining)
+    for factor in factors:
+        node = graph.add("atempo", args=f"{factor:.8g}")
+        previous.link_to(node)
+        previous = node
+    sink = graph.add("abuffersink")
+    previous.link_to(sink)
+    graph.configure()
+
+    chunks = []
+    src.push(frame)
+    src.push(None)
+    while True:
+        try:
+            chunks.append(sink.pull().to_ndarray())
+        except (av.error.BlockingIOError, av.error.EOFError):
+            break
+
+    if not chunks:
+        return np.empty(0, dtype=np.int16)
+    return np.ascontiguousarray(np.concatenate(chunks, axis=1)[0], dtype=np.int16)
 
 
 def _normalize_audio_array(audio: np.ndarray) -> np.ndarray:
@@ -178,6 +189,25 @@ def write_ogg_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
     return buffer.getvalue()
 
 
+def write_aac_bytes(audio: np.ndarray, sample_rate: int, bit_rate: int = 192000) -> bytes:
+    audio = _normalize_audio_array(audio)
+    if audio.size == 0:
+        return b""
+
+    buffer = io.BytesIO()
+    with av.open(buffer, mode="w", format="adts") as container:
+        stream = container.add_stream("aac", rate=int(sample_rate))
+        stream.layout = "mono"
+        stream.bit_rate = int(bit_rate)
+        frame = _audio_frame_from_mono(audio)
+        frame.sample_rate = int(sample_rate)
+        for packet in stream.encode(frame):
+            container.mux(packet)
+        for packet in stream.encode(None):
+            container.mux(packet)
+    return buffer.getvalue()
+
+
 def write_audio_file(path: str, audio: np.ndarray, sample_rate: int, format: str | None = None) -> None:
     target_format = (format or os.path.splitext(path)[1].lstrip(".") or "wav").lower()
     if target_format == "wav":
@@ -185,6 +215,11 @@ def write_audio_file(path: str, audio: np.ndarray, sample_rate: int, format: str
         return
     if target_format == "ogg":
         payload = write_ogg_bytes(audio, sample_rate)
+        with open(path, "wb") as fw:
+            fw.write(payload)
+        return
+    if target_format in {"aac", "adts"}:
+        payload = write_aac_bytes(audio, sample_rate)
         with open(path, "wb") as fw:
             fw.write(payload)
         return

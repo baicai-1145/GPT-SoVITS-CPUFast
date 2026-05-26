@@ -110,7 +110,6 @@ sys.path.append(now_dir)
 sys.path.append("%s/GPT_SoVITS" % (now_dir))
 
 import argparse
-import subprocess
 import wave
 import signal
 import numpy as np
@@ -119,7 +118,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 import uvicorn
 from io import BytesIO
 from tools.i18n.i18n import I18nAuto
-from tools.audio_utils import write_ogg_bytes, write_wav_bytes
+from tools.audio_utils import write_aac_bytes, write_ogg_bytes, write_wav_bytes
 from GPT_SoVITS.TTS_infer_pack.TTS import TTS, TTS_Config
 from GPT_SoVITS.TTS_infer_pack.text_segmentation_method import get_method_names as get_cut_method_names
 from pydantic import BaseModel
@@ -191,32 +190,7 @@ def pack_wav(io_buffer: BytesIO, data: np.ndarray, rate: int):
 
 
 def pack_aac(io_buffer: BytesIO, data: np.ndarray, rate: int):
-    process = subprocess.Popen(
-        [
-            "ffmpeg",
-            "-f",
-            "s16le",  # 输入16位有符号小端整数PCM
-            "-ar",
-            str(rate),  # 设置采样率
-            "-ac",
-            "1",  # 单声道
-            "-i",
-            "pipe:0",  # 从管道读取输入
-            "-c:a",
-            "aac",  # 音频编码器为AAC
-            "-b:a",
-            "192k",  # 比特率
-            "-vn",  # 不包含视频
-            "-f",
-            "adts",  # 输出AAC数据流格式
-            "pipe:1",  # 将输出写入管道
-        ],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    out, _ = process.communicate(input=data.tobytes())
-    io_buffer.write(out)
+    io_buffer.write(write_aac_bytes(data, rate, bit_rate=192000))
     return io_buffer
 
 

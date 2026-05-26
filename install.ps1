@@ -245,9 +245,9 @@ function Download-VersionFiles {
 chcp 65001
 Set-Location $PSScriptRoot
 
-Write-Info "Installing FFmpeg & CMake..."
-Invoke-Conda  ffmpeg cmake
-Write-Success "FFmpeg & CMake Installed"
+Write-Info "Installing CMake..."
+Invoke-Conda cmake
+Write-Success "CMake Installed"
 
 $RepoFileUrlPrefix = ""
 $G2PWFileUrlPrefix = ""

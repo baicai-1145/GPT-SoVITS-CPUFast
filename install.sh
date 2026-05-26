@@ -217,9 +217,9 @@ else
     fi
 fi
 
-echo -e "${INFO}Installing FFmpeg & CMake..."
-run_conda_quiet ffmpeg cmake make
-echo -e "${SUCCESS}FFmpeg & CMake Installed"
+echo -e "${INFO}Installing CMake & Make..."
+run_conda_quiet cmake make
+echo -e "${SUCCESS}CMake & Make Installed"
 
 echo -e "${INFO}Installing unzip..."
 run_conda_quiet unzip
