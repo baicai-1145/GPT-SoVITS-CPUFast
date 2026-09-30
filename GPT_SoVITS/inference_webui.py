@@ -51,7 +51,7 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 version = model_version = os.environ.get("version", "v2")
 
-from config import change_choices, get_weights_names, name2gpt_path, name2sovits_path
+from gpt_sovits_cpufast.config import change_choices, get_weights_names, name2gpt_path, name2sovits_path
 
 SoVITS_names, GPT_names = get_weights_names()
 

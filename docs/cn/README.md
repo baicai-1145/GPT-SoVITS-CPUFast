@@ -28,14 +28,17 @@
 
 ## 快速开始
 
-### 1. 创建环境
+### 1. 使用 uv 安装依赖
+
+先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/) 和 C/C++ 编译工具链，再将锁定的 CPU 推理依赖安装到 `.venv`：
 
 ```bash
-conda create -n GPTSoVits python=3.10 -y
-conda activate GPTSoVits
+uv sync --locked
 ```
 
-### 2. 安装依赖并下载推理权重
+支持 Python 3.10-3.12。uv 项目配置会选择 CPU 版 PyTorch；使用 pip 一键安装 CPU 版 PyTorch 与项目依赖，可在仓库根目录运行 `python -m pip install -r requirements.txt`。模型权重单独下载，不包含在 Python 包中。
+
+### 2. 下载推理权重
 
 CPU + ModelScope + `v2ProPlus` 示例：
 
@@ -62,20 +65,29 @@ Windows PowerShell：
 推荐方式：
 
 ```bash
-python webui.py
+uv run --locked gpt-sovits-webui
 ```
 
 直接启动高性能推理 WebUI：
 
 ```bash
-python GPT_SoVITS/inference_webui_fast.py
+uv run --locked python GPT_SoVITS/inference_webui_fast.py
 ```
+
+通过 pip 安装项目后，也可以直接使用 `gpt-sovits-webui` 启动。若希望把模型放到当前目录之外，设置 `GPT_SOVITS_DATA_DIR`：
+
+```bash
+GPT_SOVITS_DATA_DIR=$HOME/.local/share/gpt-sovits gpt-sovits-webui
+```
+
+Python 代码和小型文本资源会打进包内；推理权重、BERT/CN-HuBERT、G2PW、NLTK 数据和 Open JTalk 字典因体积及来源原因仍单独下载。
 
 ## 说明
 
 - 这个分支的目标是推理，不再支持训练工作流。
 - 中文推理前处理仍然比英 / 日 / 韩更重，因为需要额外做 `g2pw` 和 BERT 文本特征。
-- `install.sh` 和 `install.ps1` 现在只安装 CPU 版依赖，并按版本下载推理资源，不再整包下载全部预训练文件。
+- `install.sh` 和 `install.ps1` 通过 `uv sync --locked` 管理依赖，并按版本下载推理资源；Python 包不包含模型权重。
+- 如果某个依赖没有可用 wheel，需要系统安装 C/C++ 编译工具链；Windows 用户应安装带 C++ 工作负载的 Visual Studio Build Tools。
 - `NLTK` 与 `OpenJTalk` 字典默认仍会下载。
 
 ## 速度摘要

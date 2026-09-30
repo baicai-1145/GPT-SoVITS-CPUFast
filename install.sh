@@ -31,25 +31,9 @@ on_error() {
     exit "$code"
 }
 
-run_conda_quiet() {
-    local output
-    output=$(conda install --yes --quiet -c conda-forge "$@" 2>&1) || {
-        echo -e "${ERROR} Conda install failed:\n$output"
-        exit 1
-    }
-}
-
-run_pip_quiet() {
-    local output
-    output=$(pip install "$@" 2>&1) || {
-        echo -e "${ERROR} Pip install failed:\n$output"
-        exit 1
-    }
-}
-
 run_wget_quiet() {
     if wget --tries=25 --wait=5 --read-timeout=40 -q --show-progress "$@" 2>&1; then
-        if [ "$WORKFLOW" = "false" ]; then
+        if [ -t 1 ]; then
             tput cuu1 && tput el
         fi
     else
@@ -58,9 +42,8 @@ run_wget_quiet() {
     fi
 }
 
-WORKFLOW=${WORKFLOW:-"false"}
 MODEL_VERSION=""
-PIP_INDEX_URL=""
+UV_INDEX_URL=""
 
 USE_HF=false
 USE_HF_MIRROR=false
@@ -73,13 +56,13 @@ print_help() {
     echo "  --source   HF|HF-Mirror|ModelScope     Specify the model source (REQUIRED)"
     echo "  --version  v1|v2|v2Pro|v2ProPlus|all"
     echo "                                            Specify which inference pretrained files to download (REQUIRED)"
-    echo "  --pip-index-url URL                    Optional pip index mirror for requirements installation"
+    echo "  --uv-index-url URL                     Optional default package index mirror for uv"
     echo "  -h, --help                             Show this help message and exit"
     echo ""
     echo "Examples:"
     echo "  bash install.sh --source HF --version v2Pro"
     echo "  bash install.sh --source ModelScope --version all"
-    echo "  bash install.sh --source HF-Mirror --version v2ProPlus --pip-index-url https://pypi.tuna.tsinghua.edu.cn/simple"
+    echo "  bash install.sh --source HF-Mirror --version v2ProPlus --uv-index-url https://pypi.tuna.tsinghua.edu.cn/simple"
 }
 
 # Show help if no arguments provided
@@ -123,12 +106,12 @@ while [[ $# -gt 0 ]]; do
         esac
         shift 2
         ;;
-    --pip-index-url)
+    --uv-index-url | --pip-index-url)
         if [ -z "$2" ]; then
-            echo -e "${ERROR}Error: --pip-index-url requires a value"
+            echo -e "${ERROR}Error: --uv-index-url requires a value"
             exit 1
         fi
-        PIP_INDEX_URL="$2"
+        UV_INDEX_URL="$2"
         shift 2
         ;;
     -h | --help)
@@ -162,68 +145,29 @@ if [ -z "$MODEL_VERSION" ]; then
     exit 1
 fi
 
-if ! command -v conda &>/dev/null; then
-    echo -e "${ERROR}Conda Not Found"
+if ! command -v uv &>/dev/null; then
+    echo -e "${ERROR}uv Not Found. Install uv from https://docs.astral.sh/uv/getting-started/installation/"
     exit 1
 fi
 
-case "$(uname -m)" in
-x86_64 | amd64) SYSROOT_PKG="sysroot_linux-64>=2.28" ;;
-aarch64 | arm64) SYSROOT_PKG="sysroot_linux-aarch64>=2.28" ;;
-ppc64le) SYSROOT_PKG="sysroot_linux-ppc64le>=2.28" ;;
-*)
-    echo "Unsupported architecture: $(uname -m)"
+if ! command -v cc &>/dev/null && ! command -v c++ &>/dev/null && ! command -v gcc &>/dev/null && ! command -v clang &>/dev/null; then
+    echo -e "${ERROR}C/C++ compiler not found. Install Xcode Command Line Tools, GCC, or Clang before continuing."
     exit 1
-    ;;
-esac
+fi
 
-# Install build tools
 echo -e "${INFO}Detected system: $(uname -s) $(uname -r) $(uname -m)"
-if [ "$(uname)" != "Darwin" ]; then
-    gcc_major_version=$(command -v gcc >/dev/null 2>&1 && gcc -dumpversion | cut -d. -f1 || echo 0)
-    if [ "$gcc_major_version" -lt 11 ]; then
-        echo -e "${INFO}Installing GCC & G++..."
-        run_conda_quiet gcc=11 gxx=11
-        run_conda_quiet "$SYSROOT_PKG"
-        echo -e "${SUCCESS}GCC & G++ Installed..."
-    else
-        echo -e "${INFO}Detected GCC Version: $gcc_major_version"
-        echo -e "${INFO}Skip Installing GCC & G++ From Conda-Forge"
-        echo -e "${INFO}Installing libstdcxx-ng From Conda-Forge"
-        run_conda_quiet "libstdcxx-ng>=$gcc_major_version"
-        echo -e "${SUCCESS}libstdcxx-ng=$gcc_major_version Installed..."
-    fi
+echo -e "${INFO}Syncing locked Python dependencies with uv..."
+if [ -n "$UV_INDEX_URL" ]; then
+    uv sync --locked --default-index "$UV_INDEX_URL"
 else
-    if ! xcode-select -p &>/dev/null; then
-        echo -e "${INFO}Installing Xcode Command Line Tools..."
-        xcode-select --install
-        echo -e "${INFO}Waiting For Xcode Command Line Tools Installation Complete..."
-        while true; do
-            sleep 20
-
-            if xcode-select -p &>/dev/null; then
-                echo -e "${SUCCESS}Xcode Command Line Tools Installed"
-                break
-            else
-                echo -e "${INFO}Installing，Please Wait..."
-            fi
-        done
-    else
-        XCODE_PATH=$(xcode-select -p)
-        if [[ "$XCODE_PATH" == *"Xcode.app"* ]]; then
-            echo -e "${WARNING} Detected Xcode path: $XCODE_PATH"
-            echo -e "${WARNING} If your Xcode version does not match your macOS version, it may cause unexpected issues during compilation or package builds."
-        fi
-    fi
+    uv sync --locked
 fi
+echo -e "${SUCCESS}Python Dependencies Installed"
 
-echo -e "${INFO}Installing CMake & Make..."
-run_conda_quiet cmake make
-echo -e "${SUCCESS}CMake & Make Installed"
-
-echo -e "${INFO}Installing unzip..."
-run_conda_quiet unzip
-echo -e "${SUCCESS}unzip Installed"
+DATA_DIR="${GPT_SOVITS_DATA_DIR:-$SCRIPT_DIR}"
+mkdir -p "$DATA_DIR"
+export GPT_SOVITS_DATA_DIR="$DATA_DIR"
+cd "$DATA_DIR" || exit 1
 
 if [ "$USE_HF" = "true" ]; then
     echo -e "${INFO}Download Model From HuggingFace"
@@ -342,32 +286,14 @@ echo -e "${INFO}Downloading G2PWModel Files..."
 download_g2pw_files
 echo -e "${SUCCESS}G2PWModel Files Downloaded"
 
-if [ "$WORKFLOW" = false ]; then
-    echo -e "${INFO}Installing PyTorch For CPU..."
-    run_pip_quiet torch --index-url "https://download.pytorch.org/whl/cpu"
-fi
-echo -e "${SUCCESS}PyTorch Installed"
-
-echo -e "${INFO}Installing Python Dependencies From requirements.txt..."
-
-hash -r
-
-if [ -n "$PIP_INDEX_URL" ]; then
-    echo -e "${INFO}Using pip index mirror: ${PIP_INDEX_URL}"
-    run_pip_quiet -i "$PIP_INDEX_URL" -r requirements.txt
-else
-    run_pip_quiet -r requirements.txt
-fi
-
-echo -e "${SUCCESS}Python Dependencies Installed"
-
-PY_PREFIX=$(python -c "import sys; print(sys.prefix)")
-PYOPENJTALK_PREFIX=$(python -c "import os, pyopenjtalk; print(os.path.dirname(pyopenjtalk.__file__))")
+PYTHON="$SCRIPT_DIR/.venv/bin/python"
+PY_PREFIX=$("$PYTHON" -c "import sys; print(sys.prefix)")
+PYOPENJTALK_PREFIX=$("$PYTHON" -c "import os, pyopenjtalk; print(os.path.dirname(pyopenjtalk.__file__))")
 
 echo -e "${INFO}Downloading NLTK Data..."
 rm -rf nltk_data.zip
 run_wget_quiet "$NLTK_URL" -O nltk_data.zip
-unzip -q -o nltk_data.zip -d "$PY_PREFIX"
+"$PYTHON" -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' nltk_data.zip "$PY_PREFIX"
 rm -rf nltk_data.zip
 echo -e "${SUCCESS}NLTK Data Downloaded"
 

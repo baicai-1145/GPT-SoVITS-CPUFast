@@ -28,16 +28,17 @@ The remaining goal is straightforward: run GPT-SoVITS inference on CPU with less
 
 ## Quick Start
 
-### 1. Create Environment
+### 1. Install with uv
 
-Use Miniconda or an existing Conda environment:
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and a C/C++ compiler toolchain, then sync the locked CPU inference dependencies into `.venv`:
 
 ```bash
-conda create -n GPTSoVits python=3.10 -y
-conda activate GPTSoVits
+uv sync --locked
 ```
 
-### 2. Install Dependencies and Download Inference Weights
+The project supports Python 3.10-3.12. CPU PyTorch is selected by the uv project configuration. For a one-command pip setup with CPU PyTorch, run `python -m pip install -r requirements.txt` from the repository root. Model weights remain separate downloads.
+
+### 2. Download Inference Weights
 
 CPU example with ModelScope and `v2ProPlus`:
 
@@ -64,20 +65,29 @@ Available versions:
 Recommended:
 
 ```bash
-python webui.py
+uv run --locked gpt-sovits-webui
 ```
 
 Direct high-performance inference WebUI:
 
 ```bash
-python GPT_SoVITS/inference_webui_fast.py
+uv run --locked python GPT_SoVITS/inference_webui_fast.py
 ```
+
+After installing the project with pip, the same launcher is available as `gpt-sovits-webui`. Set `GPT_SOVITS_DATA_DIR` when model files should live outside the current directory:
+
+```bash
+GPT_SOVITS_DATA_DIR=$HOME/.local/share/gpt-sovits gpt-sovits-webui
+```
+
+The package contains Python code and small text assets. Inference weights, BERT/CN-HuBERT files, G2PW, NLTK data, and the Open JTalk dictionary remain separate downloads because of their size and licensing/source choices.
 
 ## Notes
 
 - This fork is aimed at CPU inference, not training.
 - Chinese inference is still heavier than English / Japanese / Korean because text preprocessing needs extra frontend work such as `g2pw` and BERT features.
-- `install.sh` and `install.ps1` are now CPU-only installers and download inference assets by version instead of the full pretrained bundle.
+- `install.sh` and `install.ps1` use `uv sync --locked` and download inference assets by version; model weights are not bundled in the Python package.
+- A platform C/C++ compiler toolchain is needed when a dependency has to build from source. Windows users should install Visual Studio Build Tools with the C++ workload.
 - `NLTK` and `OpenJTalk` dictionary downloads remain enabled by default.
 
 ## Speed Summary

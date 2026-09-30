@@ -7,6 +7,10 @@ for path in (REPO_ROOT, MODULE_DIR):
     if path not in sys.path:
         sys.path.insert(0, path)
 
+from gpt_sovits_cpufast.runtime import configure_runtime
+
+configure_runtime()
+
 from text.g2pw import G2PWPinyin
 
 g2pw = G2PWPinyin(

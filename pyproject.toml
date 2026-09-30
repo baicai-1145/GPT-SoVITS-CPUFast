@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpt-sovits-cpufast"
+version = "0.1.0"
+description = "CPU-focused inference fork of GPT-SoVITS"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "av",
+    "einops",
+    "fast-langdetect>=0.3.1",
+    "fastapi[standard]>=0.115.2",
+    "g2p_en",
+    "g2pk2",
+    "gradio<5",
+    "huggingface_hub<1.0",
+    "jieba_fast",
+    "ko_pron",
+    "matplotlib",
+    "numpy<2.0",
+    "nltk",
+    "packaging",
+    "pandas",
+    "psutil",
+    "pyopenjtalk>=0.4.1",
+    "pypinyin",
+    "pydantic<=2.10.6",
+    "python_mecab_ko; sys_platform != 'win32'",
+    "PyYAML",
+    "split-lang",
+    "starlette<1.0",
+    "tokenizers",
+    "ToJyutping",
+    "torch>=2.4",
+    "tqdm",
+    "uvicorn[standard]",
+    "wordsegment",
+]
+
+[project.scripts]
+gpt-sovits-webui = "gpt_sovits_cpufast.launchers:webui"
+gpt-sovits-api = "gpt_sovits_cpufast.launchers:api"
+gpt-sovits-api-v2 = "gpt_sovits_cpufast.launchers:api_v2"
+gpt-sovits-cli = "gpt_sovits_cpufast.launchers:cli"
+
+[tool.setuptools]
+include-package-data = true
+py-modules = ["api", "api_v2", "config", "webui"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "GPT_SoVITS*",
+    "gpt_sovits_cpufast*",
+    "tools*",
+    "jamo*",
+]
+namespaces = true
+
+[tool.setuptools.package-data]
+"*" = ["**/*.json", "**/*.yaml", "**/*.yml", "**/*.txt", "**/*.rep", "**/*.pickle", "**/*.pkl", "**/*.csv"]
+
+[tool.uv]
+package = true
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

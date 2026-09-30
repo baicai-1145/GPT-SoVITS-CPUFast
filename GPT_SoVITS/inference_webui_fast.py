@@ -16,6 +16,10 @@ REPO_ROOT = os.path.dirname(MODULE_DIR)
 for path in (REPO_ROOT, MODULE_DIR):
     if path not in sys.path:
         sys.path.insert(0, path)
+
+from gpt_sovits_cpufast.runtime import configure_runtime
+
+configure_runtime()
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 def set_high_priority():
@@ -116,11 +120,16 @@ cut_method = {
     i18n("按标点符号切"): "cut5",
 }
 
-from config import change_choices, get_weights_names, name2gpt_path, name2sovits_path
+from gpt_sovits_cpufast.config import change_choices, get_weights_names, name2gpt_path, name2sovits_path
 
 SoVITS_names, GPT_names = get_weights_names()
 
-tts_config = TTS_Config("GPT_SoVITS/configs/tts_infer.yaml")
+tts_config = TTS_Config(
+    os.environ.get(
+        "GPT_SOVITS_TTS_CONFIG",
+        os.path.join(REPO_ROOT, "GPT_SoVITS", "configs", "tts_infer.yaml"),
+    )
+)
 tts_config.device = device
 tts_config.is_half = is_half
 # tts_config.version = version

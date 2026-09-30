@@ -1,7 +1,7 @@
 Param (
     [Parameter(Mandatory=$true)][ValidateSet("HF", "HF-Mirror", "ModelScope")][string]$Source,
     [Parameter(Mandatory=$true)][ValidateSet("v1", "v2", "v2Pro", "v2ProPlus", "all")][string]$Version,
-    [string]$PipIndexUrl = ""
+    [Alias("PipIndexUrl")][string]$UvIndexUrl = ""
 )
 
 $global:ErrorActionPreference = 'Stop'
@@ -46,59 +46,6 @@ function Write-Success($msg) {
 }
 
 
-function Invoke-Conda {
-    param (
-        [Parameter(ValueFromRemainingArguments = $true)]
-        [string[]]$Args
-    )
-
-    $output = & conda install -y -q -c conda-forge @Args 2>&1
-    $exitCode = $LASTEXITCODE
-
-    if ($exitCode -ne 0) {
-        Write-Host "Conda Install $Args Failed" -ForegroundColor Red
-        $errorMessages = @()
-        foreach ($item in $output) {
-            if ($item -is [System.Management.Automation.ErrorRecord]) {
-                $msg = $item.Exception.Message
-                Write-Host "$msg" -ForegroundColor Red
-                $errorMessages += $msg
-            }
-            else {
-                Write-Host $item
-                $errorMessages += $item
-            }
-        }
-        throw [System.Exception]::new(($errorMessages -join "`n"))
-    }
-}
-
-function Invoke-Pip {
-    param (
-        [Parameter(ValueFromRemainingArguments = $true)]
-        [string[]]$Args
-    )
-    
-    $output = & pip install @Args 2>&1
-    $exitCode = $LASTEXITCODE
-    
-    if ($exitCode -ne 0) {
-        $errorMessages = @()
-        Write-Host "Pip Install $Args Failed" -ForegroundColor Red
-        foreach ($item in $output) {
-            if ($item -is [System.Management.Automation.ErrorRecord]) {
-                $msg = $item.Exception.Message
-                Write-Host "$msg" -ForegroundColor Red
-                $errorMessages += $msg
-            }
-            else {
-                Write-Host $item
-                $errorMessages += $item
-            }
-        }
-        throw [System.Exception]::new(($errorMessages -join "`n"))
-    }
-}
 
 function Invoke-Download {
     param (
@@ -245,9 +192,35 @@ function Download-VersionFiles {
 chcp 65001
 Set-Location $PSScriptRoot
 
-Write-Info "Installing CMake..."
-Invoke-Conda cmake
-Write-Success "CMake Installed"
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    throw "uv not found. Install uv from https://docs.astral.sh/uv/getting-started/installation/"
+}
+if (-not (Get-Command cl -ErrorAction SilentlyContinue) -and
+    -not (Get-Command c++ -ErrorAction SilentlyContinue) -and
+    -not (Get-Command gcc -ErrorAction SilentlyContinue) -and
+    -not (Get-Command clang -ErrorAction SilentlyContinue)) {
+    throw "C/C++ compiler not found. Install Visual Studio Build Tools with the C++ workload before continuing."
+}
+
+Write-Info "Syncing locked Python dependencies with uv..."
+$uvArgs = @('sync', '--locked')
+if ($UvIndexUrl) {
+    $uvArgs += @('--default-index', $UvIndexUrl)
+}
+& uv @uvArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "uv sync failed with exit code $LASTEXITCODE"
+}
+Write-Success "Python Dependencies Installed"
+
+$DataDir = if ($env:GPT_SOVITS_DATA_DIR) {
+    [System.IO.Path]::GetFullPath($env:GPT_SOVITS_DATA_DIR)
+} else {
+    $PSScriptRoot
+}
+New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
+$env:GPT_SOVITS_DATA_DIR = $DataDir
+Set-Location $DataDir
 
 $RepoFileUrlPrefix = ""
 $G2PWFileUrlPrefix = ""
@@ -288,26 +261,15 @@ Write-Info "Downloading G2PWModel Files..."
 Download-G2PWFiles
 Write-Success "G2PWModel Files Downloaded"
 
-Write-Info "Installing PyTorch For CPU..."
-Invoke-Pip torch --index-url "https://download.pytorch.org/whl/cpu"
-Write-Success "PyTorch Installed"
-
-Write-Info "Installing Python Dependencies From requirements.txt..."
-if ($PipIndexUrl) {
-    Write-Info "Using pip index mirror: $PipIndexUrl"
-    Invoke-Pip -i $PipIndexUrl -r requirements.txt
-} else {
-    Invoke-Pip -r requirements.txt
-}
-Write-Success "Python Dependencies Installed"
+$python = Join-Path (Join-Path $PSScriptRoot '.venv') (Join-Path 'Scripts' 'python.exe')
 
 Write-Info "Downloading NLTK Data..."
 Invoke-Download -Uri $NLTKURL -OutFile "nltk_data.zip"
-Invoke-Unzip "nltk_data.zip" (python -c "import sys; print(sys.prefix)").Trim()
+Invoke-Unzip "nltk_data.zip" (& $python -c "import sys; print(sys.prefix)").Trim()
 
 Write-Info "Downloading Open JTalk Dict..."
 Invoke-Download -Uri $OpenJTalkURL -OutFile "open_jtalk_dic_utf_8-1.11.tar.gz"
-$target = (python -c "import os, pyopenjtalk; print(os.path.dirname(pyopenjtalk.__file__))").Trim()
+$target = (& $python -c "import os, pyopenjtalk; print(os.path.dirname(pyopenjtalk.__file__))").Trim()
 tar -xzf open_jtalk_dic_utf_8-1.11.tar.gz -C $target
 Remove-Item "open_jtalk_dic_utf_8-1.11.tar.gz" -Force
 Write-Success "Open JTalk Dic Downloaded"

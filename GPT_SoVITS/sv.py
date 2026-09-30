@@ -1,9 +1,13 @@
-import sys
 import os
+import sys
+from pathlib import Path
+
 import torch
 
-sys.path.append(f"{os.getcwd()}/GPT_SoVITS/eres2net")
-sv_path = "GPT_SoVITS/pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt"
+_CODE_DIR = Path(__file__).resolve().parent
+sys.path.append(str(_CODE_DIR / "eres2net"))
+_DATA_DIR = Path(os.environ.get("GPT_SOVITS_DATA_DIR", Path.cwd())).expanduser()
+sv_path = str(_DATA_DIR / "GPT_SoVITS" / "pretrained_models" / "sv" / "pretrained_eres2netv2w24s4ep4.ckpt")
 from ERes2NetV2 import ERes2NetV2
 import kaldi as Kaldi
 
