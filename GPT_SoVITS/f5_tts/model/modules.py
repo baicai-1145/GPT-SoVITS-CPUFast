@@ -283,13 +283,16 @@ class AttnProcessor:
         value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
         # mask. e.g. inference got a batch with different target durations, mask out the padding
+        # Fast path: TTS inference always uses full lengths, so an all-true mask is
+        # equivalent to no mask at all. Skipping it avoids materializing the
+        # b*h*n*n additive mask inside SDPA (tens of MB per block on CPU).
         if mask is not None:
-            attn_mask = mask
-            attn_mask = attn_mask.unsqueeze(1).unsqueeze(1)  # 'b n -> b 1 1 n'
-            # print(3433333333,attn_mask.shape)
-            attn_mask = attn_mask.expand(batch_size, attn.heads, query.shape[-2], key.shape[-2])
+            attn_mask = mask if not bool(mask.all()) else None
         else:
             attn_mask = None
+        if attn_mask is not None:
+            attn_mask = attn_mask.unsqueeze(1).unsqueeze(1)  # 'b n -> b 1 1 n'
+            attn_mask = attn_mask.expand(batch_size, attn.heads, query.shape[-2], key.shape[-2])
         # with torch.nn.attention.sdpa_kernel(backends=[SDPBackend.EFFICIENT_ATTENTION]):
         # with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=True):
         # with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=True, enable_mem_efficient=False):
