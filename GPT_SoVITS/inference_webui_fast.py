@@ -67,6 +67,7 @@ version = model_version = os.environ.get("version", "v2")
 import gradio as gr
 from TTS_infer_pack.text_segmentation_method import get_method
 from TTS_infer_pack.TTS import NO_PROMPT_ERROR, TTS, TTS_Config
+from module.v5_inference import V5_VERSIONS, sampling_defaults, resolve_sampling
 
 from tools.assets import css, js, top_html
 from tools.i18n.i18n import I18nAuto, scan_language_list
@@ -174,7 +175,9 @@ def inference(
     keep_random,
     parallel_infer,
     repetition_penalty,
+    sample_steps=None,
 ):
+    sample_steps, cfg_rate = resolve_sampling(tts_pipeline.configs.version, sample_steps, None)
     seed = -1 if keep_random else seed
     actual_seed = seed if seed not in [-1, "", None] else random.randint(0, 2**32 - 1)
     inputs = {
@@ -197,6 +200,8 @@ def inference(
         "parallel_infer": parallel_infer,
         "vits_parallel_infer": False,
         "repetition_penalty": repetition_penalty,
+        "sample_steps": int(sample_steps),
+        "cfg_rate": float(cfg_rate),
     }
     try:
         for item in tts_pipeline.run(inputs):
@@ -231,6 +236,8 @@ with open("./weight.json", "r", encoding="utf-8") as file:
 
 from process_ckpt import get_sovits_version_from_path_fast
 
+v3v4set = {"v3", "v4"} | V5_VERSIONS
+
 
 def change_sovits_weights(sovits_path, prompt_language=None, text_language=None):
     if "！" in sovits_path or "!" in sovits_path:
@@ -238,6 +245,8 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
     global version, model_version, dict_language
     version, model_version, _ = get_sovits_version_from_path_fast(sovits_path)
     dict_language = dict_language_v1 if version == "v1" else dict_language_v2
+    visible_sample_steps = model_version in v3v4set
+    visible_inp_refs = not visible_sample_steps
     if prompt_language is not None and text_language is not None:
         if prompt_language in list(dict_language.keys()):
             prompt_text_update, prompt_language_update = (
@@ -259,9 +268,11 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
             prompt_language_update,
             text_update,
             text_language_update,
-            {"__type__": "update", "visible": True},
-            {"__type__": "update", "interactive": True},
+            {"__type__": "update", "visible": visible_inp_refs},
+            {"__type__": "update", "interactive": True if model_version not in v3v4set else False},
             {"__type__": "update", "value": i18n("模型加载中，请等待"), "interactive": False},
+            {"__type__": "update", "interactive": visible_sample_steps, "value": sampling_defaults(model_version)[0]},
+            {"__type__": "update", "value": batch_size if model_version not in V5_VERSIONS else 1},
         )
 
     tts_pipeline.init_vits_weights(sovits_path)
@@ -272,9 +283,11 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
         prompt_language_update,
         text_update,
         text_language_update,
-        {"__type__": "update", "visible": True},
-        {"__type__": "update", "interactive": True},
+        {"__type__": "update", "visible": visible_inp_refs},
+        {"__type__": "update", "interactive": True if model_version not in v3v4set else False},
         {"__type__": "update", "value": i18n("合成语音"), "interactive": True},
+        {"__type__": "update", "interactive": visible_sample_steps, "value": sampling_defaults(model_version)[0]},
+        {"__type__": "update", "value": batch_size if model_version not in V5_VERSIONS else 1},
     )
     with open("./weight.json") as f:
         data = f.read()
@@ -364,7 +377,14 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         step=1,
                         label=i18n("GPT批大小"),
                         info=i18n("仅影响GPT/T2S批量语义生成，VITS不并行"),
-                        value=2,
+                        value=1 if model_version in V5_VERSIONS else 2,
+                        interactive=True,
+                    )
+                    sample_steps = gr.Radio(
+                        label="Euler steps (V3/V4/V5)",
+                        value=sampling_defaults(model_version)[0],
+                        choices=[4, 8, 16, 32],
+                        visible=model_version in v3v4set,
                         interactive=True,
                     )
                 with gr.Row():
@@ -448,6 +468,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 keep_random,
                 parallel_infer,
                 repetition_penalty,
+                sample_steps,
             ],
             [output, seed],
         )
@@ -465,6 +486,8 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 inp_refs,
                 ref_text_free,
                 inference_button,
+                sample_steps,
+                batch_size,
             ],
         )  #
         GPT_dropdown.change(change_gpt_weights, [GPT_dropdown], [])
