@@ -1,6 +1,6 @@
 Param (
     [Parameter(Mandatory=$true)][ValidateSet("HF", "HF-Mirror", "ModelScope")][string]$Source,
-    [Parameter(Mandatory=$true)][ValidateSet("v1", "v2", "v2Pro", "v2ProPlus", "all")][string]$Version,
+    [Parameter(Mandatory=$true)][ValidateSet("v1", "v2", "v2Pro", "v2ProPlus", "v3", "v4", "v5", "all")][string]$Version,
     [Alias("PipIndexUrl")][string]$UvIndexUrl = ""
 )
 
@@ -83,11 +83,14 @@ function Invoke-Unzip {
 function Download-RepoFileIfMissing {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$RelativePath
+        [string]$RelativePath,
+
+        [Parameter()]
+        [string]$UrlPrefix = $RepoFileUrlPrefix
     )
 
     $localPath = Join-Path "GPT_SoVITS" $RelativePath
-    $remoteUrl = "$RepoFileUrlPrefix/$RelativePath"
+    $remoteUrl = "$UrlPrefix/$RelativePath"
 
     if (Test-Path $localPath -PathType Leaf) {
         Write-Info "File Exists: $localPath"
@@ -177,11 +180,31 @@ function Download-VersionFiles {
             Download-RepoFileIfMissing "pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt"
             Download-RepoFileIfMissing "pretrained_models/v2Pro/s2Gv2ProPlus.pth"
         }
+        "v3" {
+            Download-RepoFileIfMissing "pretrained_models/s1v3.ckpt"
+            Download-RepoFileIfMissing "pretrained_models/s2Gv3.pth"
+            Download-RepoFileIfMissing "pretrained_models/models--nvidia--bigvgan_v2_24khz_100band_256x/config.json"
+            Download-RepoFileIfMissing "pretrained_models/models--nvidia--bigvgan_v2_24khz_100band_256x/bigvgan_generator.pt"
+        }
+        "v4" {
+            Download-RepoFileIfMissing "pretrained_models/s1v3.ckpt"
+            Download-RepoFileIfMissing "pretrained_models/gsv-v4-pretrained/s2Gv4.pth"
+            Download-RepoFileIfMissing "pretrained_models/gsv-v4-pretrained/vocoder.pth"
+        }
+        "v5" {
+            Download-RepoFileIfMissing "pretrained_models/s1v3.ckpt"
+            Download-RepoFileIfMissing "gsv-v5-pretrained/s2Gv5dev.pth" $V5FileUrlPrefix
+            Download-RepoFileIfMissing "gsv-v5-pretrained/s2Gv5turbo.pth" $V5FileUrlPrefix
+            Download-RepoFileIfMissing "gsv-v5-pretrained/vocoder.pth" $V5FileUrlPrefix
+        }
         "all" {
             Download-VersionFiles "v1"
             Download-VersionFiles "v2"
             Download-VersionFiles "v2Pro"
             Download-VersionFiles "v2ProPlus"
+            Download-VersionFiles "v3"
+            Download-VersionFiles "v4"
+            Download-VersionFiles "v5"
         }
         default {
             throw "Unknown version: $SelectedVersion"
@@ -223,6 +246,7 @@ $env:GPT_SOVITS_DATA_DIR = $DataDir
 Set-Location $DataDir
 
 $RepoFileUrlPrefix = ""
+$V5FileUrlPrefix = ""
 $G2PWFileUrlPrefix = ""
 $NLTKURL          = ""
 $OpenJTalkURL     = ""
@@ -231,6 +255,7 @@ switch ($Source) {
     "HF" {
         Write-Info "Download Model From HuggingFace"
         $RepoFileUrlPrefix = "https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main"
+        $V5FileUrlPrefix   = "https://huggingface.co/lj1995/GPT-SoVITS/resolve/main"
         $G2PWFileUrlPrefix = "https://huggingface.co/baicai1145/g2pw/resolve/main"
         $NLTKURL           = "https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/nltk_data.zip"
         $OpenJTalkURL      = "https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/open_jtalk_dic_utf_8-1.11.tar.gz"
@@ -238,6 +263,7 @@ switch ($Source) {
     "HF-Mirror" {
         Write-Info "Download Model From HuggingFace-Mirror"
         $RepoFileUrlPrefix = "https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main"
+        $V5FileUrlPrefix   = "https://hf-mirror.com/lj1995/GPT-SoVITS/resolve/main"
         $G2PWFileUrlPrefix = "https://hf-mirror.com/baicai1145/g2pw/resolve/main"
         $NLTKURL           = "https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/nltk_data.zip"
         $OpenJTalkURL      = "https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/open_jtalk_dic_utf_8-1.11.tar.gz"
@@ -245,6 +271,7 @@ switch ($Source) {
     "ModelScope" {
         Write-Info "Download Model From ModelScope"
         $RepoFileUrlPrefix = "https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master"
+        $V5FileUrlPrefix   = "https://www.modelscope.cn/models/lj1995/GPT-SoVITS/resolve/master"
         $G2PWFileUrlPrefix = "https://www.modelscope.cn/models/baicai1145/g2pw/resolve/master"
         $NLTKURL           = "https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/nltk_data.zip"
         $OpenJTalkURL      = "https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/open_jtalk_dic_utf_8-1.11.tar.gz"

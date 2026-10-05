@@ -54,7 +54,7 @@ print_help() {
     echo ""
     echo "Options:"
     echo "  --source   HF|HF-Mirror|ModelScope     Specify the model source (REQUIRED)"
-    echo "  --version  v1|v2|v2Pro|v2ProPlus|all"
+    echo "  --version  v1|v2|v2Pro|v2ProPlus|v3|v4|v5|all"
     echo "                                            Specify which inference pretrained files to download (REQUIRED)"
     echo "  --uv-index-url URL                     Optional default package index mirror for uv"
     echo "  -h, --help                             Show this help message and exit"
@@ -95,12 +95,12 @@ while [[ $# -gt 0 ]]; do
         ;;
     --version)
         case "$2" in
-        v1 | v2 | v2Pro | v2ProPlus | all)
+        v1 | v2 | v2Pro | v2ProPlus | v3 | v4 | v5 | all)
             MODEL_VERSION="$2"
             ;;
         *)
             echo -e "${ERROR}Error: Invalid Version: $2"
-            echo -e "${ERROR}Choose From: [v1, v2, v2Pro, v2ProPlus, all]"
+            echo -e "${ERROR}Choose From: [v1, v2, v2Pro, v2ProPlus, v3, v4, v5, all]"
             exit 1
             ;;
         esac
@@ -172,18 +172,21 @@ cd "$DATA_DIR" || exit 1
 if [ "$USE_HF" = "true" ]; then
     echo -e "${INFO}Download Model From HuggingFace"
     REPO_FILE_URL_PREFIX="https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main"
+    V5_FILE_URL_PREFIX="https://huggingface.co/lj1995/GPT-SoVITS/resolve/main"
     G2PW_FILE_URL_PREFIX="https://huggingface.co/baicai1145/g2pw/resolve/main"
     NLTK_URL="https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/nltk_data.zip"
     PYOPENJTALK_URL="https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/open_jtalk_dic_utf_8-1.11.tar.gz"
 elif [ "$USE_HF_MIRROR" = "true" ]; then
     echo -e "${INFO}Download Model From HuggingFace-Mirror"
     REPO_FILE_URL_PREFIX="https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main"
+    V5_FILE_URL_PREFIX="https://hf-mirror.com/lj1995/GPT-SoVITS/resolve/main"
     G2PW_FILE_URL_PREFIX="https://hf-mirror.com/baicai1145/g2pw/resolve/main"
     NLTK_URL="https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/nltk_data.zip"
     PYOPENJTALK_URL="https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main/open_jtalk_dic_utf_8-1.11.tar.gz"
 elif [ "$USE_MODELSCOPE" = "true" ]; then
     echo -e "${INFO}Download Model From ModelScope"
     REPO_FILE_URL_PREFIX="https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master"
+    V5_FILE_URL_PREFIX="https://www.modelscope.cn/models/lj1995/GPT-SoVITS/resolve/master"
     G2PW_FILE_URL_PREFIX="https://www.modelscope.cn/models/baicai1145/g2pw/resolve/master"
     NLTK_URL="https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/nltk_data.zip"
     PYOPENJTALK_URL="https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/open_jtalk_dic_utf_8-1.11.tar.gz"
@@ -191,8 +194,9 @@ fi
 
 download_repo_file_if_missing() {
     local relative_path="$1"
+    local url_prefix="${2:-$REPO_FILE_URL_PREFIX}"
     local local_path="GPT_SoVITS/${relative_path}"
-    local remote_url="${REPO_FILE_URL_PREFIX}/${relative_path}"
+    local remote_url="${url_prefix}/${relative_path}"
 
     if [ -f "$local_path" ]; then
         echo -e "${INFO}File Exists: ${local_path}"
@@ -263,11 +267,31 @@ download_version_files() {
         download_repo_file_if_missing "pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt"
         download_repo_file_if_missing "pretrained_models/v2Pro/s2Gv2ProPlus.pth"
         ;;
+    v3)
+        download_repo_file_if_missing "pretrained_models/s1v3.ckpt"
+        download_repo_file_if_missing "pretrained_models/s2Gv3.pth"
+        download_repo_file_if_missing "pretrained_models/models--nvidia--bigvgan_v2_24khz_100band_256x/config.json"
+        download_repo_file_if_missing "pretrained_models/models--nvidia--bigvgan_v2_24khz_100band_256x/bigvgan_generator.pt"
+        ;;
+    v4)
+        download_repo_file_if_missing "pretrained_models/s1v3.ckpt"
+        download_repo_file_if_missing "pretrained_models/gsv-v4-pretrained/s2Gv4.pth"
+        download_repo_file_if_missing "pretrained_models/gsv-v4-pretrained/vocoder.pth"
+        ;;
+    v5)
+        download_repo_file_if_missing "pretrained_models/s1v3.ckpt"
+        download_repo_file_if_missing "gsv-v5-pretrained/s2Gv5dev.pth" "$V5_FILE_URL_PREFIX"
+        download_repo_file_if_missing "gsv-v5-pretrained/s2Gv5turbo.pth" "$V5_FILE_URL_PREFIX"
+        download_repo_file_if_missing "gsv-v5-pretrained/vocoder.pth" "$V5_FILE_URL_PREFIX"
+        ;;
     all)
         download_version_files v1
         download_version_files v2
         download_version_files v2Pro
         download_version_files v2ProPlus
+        download_version_files v3
+        download_version_files v4
+        download_version_files v5
         ;;
     *)
         echo -e "${ERROR}Unknown version: $1"

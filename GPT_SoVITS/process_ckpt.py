@@ -20,8 +20,13 @@ def my_save(fea, path):  #####fix issue: torch.save doesn't support chinese path
 from io import BytesIO
 
 model_version2byte = {
+    "v3": b"03",
+    "v4": b"04",
     "v2Pro": b"05",
     "v2ProPlus": b"06",
+    "v5": b"07",
+    "v5dev": b"07",
+    "v5turbo": b"08",
 }
 
 
@@ -61,20 +66,35 @@ def savee(ckpt, name, epoch, steps, hps, model_version=None, lora_rank=None):
 """
 00:v1
 01:v2
+03:v3
+04:v4
 05:v2Pro
 06:v2ProPlus
+07:v5dev
+08:v5turbo
 """
 head2version = {
     b"00": ["v1", "v1", False],
     b"01": ["v2", "v2", False],
+    b"03": ["v2", "v3", True],
+    b"04": ["v2", "v4", True],
     b"05": ["v2", "v2Pro", False],
     b"06": ["v2", "v2ProPlus", False],
+    b"07": ["v2", "v5dev", False],
+    b"08": ["v2", "v5turbo", False],
 }
 hash_pretrained_dict = {
     "dc3c97e17592963677a4a1681f30c653": ["v2", "v2", False],  # s2G488k.pth#sovits_v1_pretrained
+    "43797be674a37c1c83ee81081941ed0f": ["v2", "v3", False],  # s2Gv3.pth#sovits_v3_pretrained
     "6642b37f3dbb1f76882b69937c95a5f3": ["v2", "v2", False],  # s2G2333K.pth#sovits_v2_pretrained
+    "4f26b9476d0c5033e04162c486074374": ["v2", "v4", False],  # s2Gv4.pth#sovits_v4_pretrained
     "c7e9fce2223f3db685cdfa1e6368728a": ["v2", "v2Pro", False],  # s2Gv2Pro.pth#sovits_v2Pro_pretrained
     "66b313e39455b57ab1b0bc0b239c9d0a": ["v2", "v2ProPlus", False],  # s2Gv2ProPlus.pth#sovits_v2ProPlus_pretrained
+    "0e6e00af4104438346bda5344e6260e3": ["v2", "v5dev", False],  # s2Gv5dev.pth, 07 header
+    "695048a8e361076a54e6f32a21b949a3": ["v2", "v5turbo", False],  # s2Gv5turbo.pth, 08 header
+    # Full-file md5 hashes for re-packed redistributions of the same weights.
+    "f4108b6b974ae2c4683101357c96039c": ["v2", "v5dev", False],  # s2Gv5dev.pth (repack)
+    "ed5d97b1c1023e854d32d4b52277448b": ["v2", "v5turbo", False],  # s2Gv5turbo.pth (repack)
 }
 import hashlib
 
@@ -96,24 +116,34 @@ def get_sovits_version_from_path_fast(sovits_path):
     with open(sovits_path, "rb") as f:
         version = f.read(2)
     if version != b"PK":
-        if version in {b"02", b"03", b"04"}:
-            raise ValueError(i18n("当前仓库已移除 SoVITS v3/v4 支持"))
         return head2version[version]
+    filename = os.path.basename(sovits_path).lower()
+    if filename in {"s2gv5dev.pth", "s2gv5turbo.pth"}:
+        return ["v2", "v5turbo" if filename == "s2gv5turbo.pth" else "v5dev", False]
+    # Only unknown legacy PK checkpoints need full structural inspection.
+    if os.path.getsize(sovits_path) >= 700 * 1024 * 1024:
+        checkpoint = load_sovits_new(sovits_path)
+        weights = checkpoint.get("weight", {})
+        if ("cfm.estimator.time_embed.time_mlp.0.weight" in weights
+                and "cfm.estimator.d_embed.time_mlp.0.weight" not in weights):
+            return ["v2", "v5dev", False]
     ###3-old weights, by file size
+    if_lora_v3 = False
     size = os.path.getsize(sovits_path)
     """
             v1weights:about 82942KB
                 half thr:82978KB
             v2weights:about 83014KB
-            old unsupported large v3/v4 weights:about 750MB
+            v3weights:about 750MB
     """
     if size < 82978 * 1024:
         model_version = version = "v1"
     elif size < 700 * 1024 * 1024:
         model_version = version = "v2"
     else:
-        raise ValueError(i18n("当前仓库已移除 SoVITS v3/v4 支持"))
-    return version, model_version, False
+        version = "v2"
+        model_version = "v3"
+    return version, model_version, if_lora_v3
 
 
 def load_sovits_new(sovits_path):
