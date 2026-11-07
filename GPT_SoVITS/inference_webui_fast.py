@@ -441,6 +441,20 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                     seed = gr.Number(label=i18n("随机种子"), value=-1)
                     keep_random = gr.Checkbox(label=i18n("保持随机"), value=True, interactive=True, show_label=True)
 
+                with gr.Row():
+                    use_g2ps = gr.Checkbox(
+                        label=i18n("多音字消歧 g2pS（轻量神经模型）"),
+                        info=i18n("G2P_BACKEND=g2ps；需 pip install g2ps pypinyin-g2pS"),
+                        value=os.environ.get("G2P_BACKEND", "g2pw") == "g2ps",
+                        interactive=True, show_label=True,
+                    )
+                    use_distilled_hubert = gr.Checkbox(
+                        label=i18n("蒸馏版 HuBERT（2.97M，约 32× 小）"),
+                        info=i18n("HUBERT_FRONTEND=distilled；参考音频→语义码阶段提速"),
+                        value=os.environ.get("HUBERT_FRONTEND", "") == "distilled",
+                        interactive=True, show_label=True,
+                    )
+
                 output = gr.Audio(label=i18n("输出的语音"))
                 with gr.Row():
                     inference_button = gr.Button(i18n("合成语音"), variant="primary")
@@ -473,6 +487,28 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
             [output, seed],
         )
         stop_infer.click(tts_pipeline.stop, [], [])
+
+        def _toggle_g2ps(use: bool):
+            try:
+                from text.chinese2 import set_g2p_backend
+                name = set_g2p_backend("g2ps" if use else "g2pw")
+                return f"G2P backend -> {name}"
+            except Exception as e:
+                return f"g2pS 切换失败: {e}（需 pip install g2ps pypinyin-g2pS）"
+
+        def _toggle_distilled(use: bool):
+            try:
+                os.environ["HUBERT_FRONTEND"] = "distilled" if use else "hubert"
+                tts_pipeline.init_cnhuhbert_weights(tts_pipeline.configs.cnhuhbert_base_path)
+                return ("HuBERT frontend -> distilled (2.97M)" if use
+                        else "HuBERT frontend -> chinese-hubert-base")
+            except Exception as e:
+                os.environ["HUBERT_FRONTEND"] = "hubert" if use else "distilled"
+                tts_pipeline.init_cnhuhbert_weights(tts_pipeline.configs.cnhuhbert_base_path)
+                return f"蒸馏 HuBERT 切换失败: {e}"
+
+        use_g2ps.change(_toggle_g2ps, inputs=[use_g2ps], outputs=None)
+        use_distilled_hubert.change(_toggle_distilled, inputs=[use_distilled_hubert], outputs=None)
         SoVITS_dropdown.change(
             change_sovits_weights,
             [SoVITS_dropdown, prompt_language, text_language],

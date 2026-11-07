@@ -90,6 +90,24 @@ The package contains Python code and small text assets. Inference weights, BERT/
 - A platform C/C++ compiler toolchain is needed when a dependency has to build from source. Windows users should install Visual Studio Build Tools with the C++ workload.
 - `NLTK` and `OpenJTalk` dictionary downloads remain enabled by default.
 
+## Optional Lightweight Frontends
+
+Two inference options can be toggled at runtime (WebUI checkboxes, or environment variables for API deployments). Both default to the original behavior.
+
+### 1. `g2pS` polyphone disambiguation (lighter replacement for `g2pw`)
+
+- Toggle: WebUI checkbox `多音字消歧 g2pS` or `G2P_BACKEND=g2ps` (default `g2pw`; `pypinyin` = dictionary only).
+- Deps: `pip install g2ps pypinyin-g2pS` — the `g2ps` wheel bundles a 2.1 MB numpy-only `nano` model (vs 637 MB `g2pw.pth`), no ONNX/torch runtime needed.
+- Measured on the real `clean_text` path (CPU, 8 threads, min of 10 runs): `g2pw` ~600+ ms / 180 chars vs `g2pS` **~83 ms / 180 chars (0.46 ms/char, ~7x faster)**; engine cost is ~7 ms/sentence (numpy transformer, per-sentence context needed for disambiguation); polyphone outputs identical to `g2pw` on test sentences (银行/行踪/重量级 all correct).
+- Includes a word-level pinyin result cache (`text/pinyin_cache.py`) that also speeds up the default `g2pw` path (tone-sandhi merge passes and phrase-override lookups reuse memoized results; outputs verified identical).
+- Uses [pypinyin-g2pS](https://pypi.org/project/pypinyin-g2pS/) as the polyphone decision engine; monophonic characters keep pypinyin's dictionary path.
+
+### 2. Distilled HuBERT frontend (~32x smaller)
+
+- Toggle: WebUI checkbox `蒸馏版 HuBERT` or `HUBERT_FRONTEND=distilled` (`hubert` is the default).
+- Weights ship with this repo: `GPT_SoVITS/pretrained_models/distilled_hubert/student_v0.pt` (11.9 MB, 2.97M params vs 95M).
+- Distilled from `chinese-hubert-base` on edge-tts + AISHELL-1; e2e paired synthesis is at the teacher's own cross-seed noise level (token norm_lev 0.843 vs null 0.815, CER median 0, speaker cosine 0.913 > teacher cross-seed 0.845). Report: upstream `distill_lab/REPORT_student.md`.
+
 ## Speed Summary
 
 Without changing recognition behavior, prosody, speaker identity, or audio quality, this CPU fork currently delivers:

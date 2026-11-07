@@ -6,7 +6,7 @@ from text.g2pw.compact_pypinyin import install as _install_compact_pypinyin
 _install_compact_pypinyin()
 
 from pypinyin import Style
-from pypinyin import pinyin
+from text.pinyin_cache import cached_pinyin as pinyin
 from pypinyin import constants as _pypinyin_constants
 from pypinyin.contrib.tone_convert import to_finals_tone3, to_initials
 
@@ -32,19 +32,57 @@ from text.phone_units import finalize_phone_units
 
 # is_g2pw_str = os.environ.get("is_g2pw", "True")##默认开启
 # is_g2pw = False#True if is_g2pw_str.lower() == 'true' else False
-is_g2pw = True  # True if is_g2pw_str.lower() == 'true' else False
+# G2P_BACKEND: g2pw (default, torch BERT converter) | g2ps (2.1MB numpy) | pypinyin (dict only)
+g2p_backend = os.environ.get("G2P_BACKEND", "g2pw").strip().lower()
+is_g2pw = g2p_backend in ("g2pw", "g2ps")
 if is_g2pw:
-    # print("当前使用g2pw进行拼音推理")
-    from text.g2pw.torch_api import G2PWTorchConverter
     from text.g2pw.pronunciation import correct_pronunciation, get_phrase_pronunciation
 
-    parent_directory = os.path.dirname(current_file_path)
-    g2pw = G2PWTorchConverter(
-        model_dir="GPT_SoVITS/text/G2PWModel",
-        style="pinyin",
-        model_source=os.environ.get("bert_path", "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"),
-        enable_non_tradional_chinese=True,
-    )
+    if g2p_backend == "g2ps":
+        from text.g2pw.g2ps_adapter import G2pSAdapter
+
+        g2pw = G2pSAdapter()
+    else:
+        from text.g2pw.torch_api import G2PWTorchConverter
+
+        parent_directory = os.path.dirname(current_file_path)
+        g2pw = G2PWTorchConverter(
+            model_dir="GPT_SoVITS/text/G2PWModel",
+            style="pinyin",
+            model_source=os.environ.get("bert_path", "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"),
+            enable_non_tradional_chinese=True,
+        )
+
+
+def set_g2p_backend(name: str):
+    """Runtime switch: 'g2pw' (default) | 'g2ps' | 'pypinyin'. No reload needed —
+    internal call sites read these module globals at call time."""
+    global g2p_backend, is_g2pw, g2pw, correct_pronunciation, get_phrase_pronunciation
+    name = (name or "g2pw").strip().lower()
+    if name not in ("g2pw", "g2ps", "pypinyin"):
+        raise ValueError(f"unknown G2P backend: {name!r}")
+    if name != "pypinyin":
+        from text.g2pw.pronunciation import correct_pronunciation as _cp, get_phrase_pronunciation as _gp
+        correct_pronunciation, get_phrase_pronunciation = _cp, _gp
+    if name == "g2ps":
+        from text.g2pw.g2ps_adapter import G2pSAdapter
+        g2pw = G2pSAdapter()
+        is_g2pw = True
+    elif name == "pypinyin":
+        g2pw = None
+        is_g2pw = False
+    else:
+        from text.g2pw.torch_api import G2PWTorchConverter
+        g2pw = G2PWTorchConverter(
+            model_dir="GPT_SoVITS/text/G2PWModel",
+            style="pinyin",
+            model_source=os.environ.get("bert_path", "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"),
+            enable_non_tradional_chinese=True,
+        )
+        is_g2pw = True
+    g2p_backend = name
+    os.environ["G2P_BACKEND"] = name
+    return name
 
 rep_map = {
     "：": ",",

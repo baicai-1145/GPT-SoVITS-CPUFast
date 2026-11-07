@@ -15,7 +15,7 @@ from typing import List
 from typing import Tuple
 
 import jieba_fast as jieba
-from pypinyin import lazy_pinyin
+from text.pinyin_cache import cached_lazy_pinyin as lazy_pinyin
 from pypinyin import Style
 
 

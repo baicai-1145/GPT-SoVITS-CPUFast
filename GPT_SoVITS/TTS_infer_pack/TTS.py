@@ -537,6 +537,13 @@ class TTS:
         # self.enable_half_precision(self.configs.is_half)
 
     def init_cnhuhbert_weights(self, base_path: str):
+        frontend = os.environ.get("HUBERT_FRONTEND", "").strip().lower()
+        if frontend in ("distilled", "student"):
+            from feature_extractor.student_hubert import load_distilled_hubert
+            print("Using distilled HuBERT frontend (HUBERT_FRONTEND=distilled)")
+            self.cnhuhbert_model = load_distilled_hubert(
+                device=self.configs.device, is_half=self.configs.is_half)
+            return
         print(f"Loading CNHuBERT weights from {base_path}")
         self.cnhuhbert_model = CNHubert(base_path)
         self.cnhuhbert_model = self.cnhuhbert_model.eval()
